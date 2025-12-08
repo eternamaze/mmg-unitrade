@@ -1,0 +1,12 @@
+[package]
+name = "unitrade"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1.43.0", features = ["full"] }
+async-trait = "0.1.86"
+anyhow = "1.0.95"
+rust_decimal = "1.33"
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "1.0"
