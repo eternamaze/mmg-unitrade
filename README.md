@@ -30,7 +30,7 @@ Add `unitrade` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-unitrade = { git = "https://github.com/yourusername/unitrade" }
+unitrade = { git = "https://github.com/eternamaze/unitrade" }
 ```
 
 Implement the traits for your specific exchange (see `mmg-tradengine` for a reference implementation).
