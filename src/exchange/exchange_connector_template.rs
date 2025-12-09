@@ -30,12 +30,18 @@ pub trait ExchangeConnector:
     + AccessChannel<NetworkControlDomain, Sender = mpsc::Sender<NetworkCommand>, Receiver = ()>
     + AccessChannel<NetworkStatusDomain, Sender = (), Receiver = broadcast::Receiver<NetworkStatus>>
 {
+    /// 连接器的配置/实现类型，用于构建连接器实例。
+    type Config: Send + Sync + 'static;
+
     /// 连接器暴露给内部组件 (Feed/Gateway) 的挂钩。
     /// 这是一个句柄，用于让组件挂载到连接器上。
     /// 具体的挂钩类型由实现者定义（例如包含特定 SDK 的 Sender）。
     ///
     /// 强烈建议 Hook 内部持有一个发送端，用于发送 `ConnectorRequest`。
     type Hook: Clone + Send + Sync + 'static;
+
+    /// 使用配置构建连接器实例
+    fn new(config: Self::Config) -> Self;
 
     /// 创建一个挂钩实例，供 Feed 和 Gateway 使用。
     fn create_hook(&self) -> Self::Hook;
@@ -394,7 +400,13 @@ where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
     Impl: ConnectorImpl<Instrument = I>,
 {
+    type Config = Impl;
     type Hook = StandardHook<I>;
+
+    fn new(config: Self::Config) -> Self {
+        Self::new(config)
+    }
+
     fn create_hook(&self) -> Self::Hook {
         self.hook.clone()
     }

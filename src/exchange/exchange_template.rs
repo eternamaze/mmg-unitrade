@@ -194,9 +194,10 @@ where
     /// 构造函数：强制使用 Connector 创建 Feed 和 Gateway
     ///
     /// 这是一个“工厂方法”，它封装了组件的创建过程。
-    /// 外部用户只需要提供 Connector，Exchange 会自动创建并组装 Feed 和 Gateway。
+    /// 外部用户只需要提供 Connector 的配置（或实现策略），Exchange 会自动创建 Connector，并组装 Feed 和 Gateway。
     /// 这确保了 Feed 和 Gateway 必须复用同一个 Connector 的挂钩 (Hook)。
-    pub fn build(connector: C) -> Self {
+    pub fn build(config: C::Config) -> Self {
+        let connector = C::new(config);
         let hook = connector.create_hook();
         let feed = Some(F::new(hook.clone()));
         let gateway = Some(G::new(hook));
