@@ -29,8 +29,8 @@ pub struct Exchange<C, F, G, I> {
     /// 连接器是内部基础设施，不对外暴露。
     /// 外部只能通过 Feed 和 Gateway 与系统交互。
     connector: Option<C>,
-    pub feed: Option<F>,
-    pub gateway: Option<G>,
+    feed: Option<F>,
+    gateway: Option<G>,
     _marker: PhantomData<I>,
 }
 
