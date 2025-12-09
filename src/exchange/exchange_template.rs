@@ -4,13 +4,13 @@ use crate::dataform::kline::KlineSeries;
 use crate::dataform::orderbook::OrderBook;
 use crate::dataform::tradeflow::TradeFlow;
 use crate::exchange::exchange_connector_template::ExchangeConnector;
-use crate::exchange::exchange_feed_template::{
-    ExchangeFeed, FeedCommand, KlineDomain, OrderBookDomain, TradeFlowDomain,
+use crate::exchange::exchange_domain::{
+    BalanceCommand, BalanceDomain, BalanceUpdate, FeedCommand, KlineDomain, OrderBookDomain,
+    OrderCommand, OrderDomain, OrderUpdate, PositionCommand, PositionDomain, PositionUpdate,
+    TradeFlowDomain,
 };
-use crate::exchange::exchange_gateway_template::{
-    BalanceCommand, BalanceDomain, BalanceUpdate, ExchangeGateway, OrderCommand, OrderDomain,
-    OrderUpdate, PositionCommand, PositionDomain, PositionUpdate,
-};
+use crate::exchange::exchange_feed_template::ExchangeFeed;
+use crate::exchange::exchange_gateway_template::ExchangeGateway;
 use async_trait::async_trait;
 use std::marker::PhantomData;
 use tokio::sync::{broadcast, mpsc};

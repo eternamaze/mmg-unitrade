@@ -2,39 +2,17 @@ use crate::common::actor_trait::{AccessChannel, Actor, ChannelPair};
 use crate::dataform::kline::KlineSeries;
 use crate::dataform::orderbook::OrderBook;
 use crate::dataform::tradeflow::TradeFlow;
-use crate::exchange::exchange_connector_template::{ChannelType, ConnectorRequest, StandardHook};
+use crate::exchange::exchange_connector_template::{StandardHook};
+use crate::exchange::exchange_domain::{
+    ConnectorRequest, FeedCommand, KlineDomain, OrderBookDomain, TradeFlowDomain,
+};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast, mpsc};
 
-pub use crate::exchange::exchange_domain::{KlineDomain, OrderBookDomain, TradeFlowDomain};
-
 // --- Feed Control Language ---
 
-/// Feed 控制指令
-/// 策略层通过此指令控制 Feed 的行为。
-/// 使用泛型 `I` (Instrument) 来指定操作对象。
-#[derive(Debug, Clone)]
-pub enum FeedCommand<I> {
-    /// 订阅特定标的的特定数据流
-    Subscribe {
-        instrument: I,
-        channel_type: ChannelType,
-    },
-    /// 取消订阅
-    Unsubscribe {
-        instrument: I,
-        channel_type: ChannelType,
-    },
-    /// 请求立即推送一次全量快照
-    RequestSnapshot { instrument: I },
-    /// 暂停推送（节省带宽）
-    Suspend { instrument: I },
-    /// 恢复推送
-    Resume { instrument: I },
-    /// 设置聚合频率（毫秒），0 表示实时推送
-    SetFrequency { instrument: I, interval_ms: u64 },
-}
+// Moved to exchange_domain.rs
 
 /// 交易所行情源 (Feed)
 ///
