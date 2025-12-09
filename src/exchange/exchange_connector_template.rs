@@ -5,13 +5,7 @@ use crate::common::actor_trait::{AccessChannel, Actor};
 use async_trait::async_trait;
 use tokio::sync::{broadcast, mpsc};
 
-// --- Network Domain (DDD) ---
-
-/// 网络控制域：用于向连接器发送控制指令（如重连、断开、熔断）
-pub struct NetworkControlDomain;
-
-/// 网络状态域：用于订阅连接器的状态变更（如连接断开、延迟过高）
-pub struct NetworkStatusDomain;
+pub use crate::exchange::exchange_domain::{NetworkControlDomain, NetworkStatusDomain};
 
 #[derive(Debug, Clone)]
 pub enum NetworkCommand {

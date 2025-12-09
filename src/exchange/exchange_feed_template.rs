@@ -1,9 +1,5 @@
 use crate::common::actor_trait::Actor;
-
-// --- Domain Identifiers ---
-pub struct OrderBookDomain;
-pub struct TradeFlowDomain;
-pub struct KlineDomain;
+pub use crate::exchange::exchange_domain::{KlineDomain, OrderBookDomain, TradeFlowDomain};
 
 // --- Feed Control Language ---
 

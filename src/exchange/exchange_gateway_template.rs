@@ -16,10 +16,7 @@ pub enum GatewayError {
     InvalidRequest(String),
 }
 
-// --- Domain Identifiers ---
-pub struct OrderDomain;
-pub struct PositionDomain;
-pub struct BalanceDomain;
+pub use crate::exchange::exchange_domain::{BalanceDomain, OrderDomain, PositionDomain};
 
 // --- Order Domain ---
 #[derive(Debug, Clone)]
