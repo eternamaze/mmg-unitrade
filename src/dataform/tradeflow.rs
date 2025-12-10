@@ -1,4 +1,4 @@
-use crate::common::account_model::{TradeId, TradingPair};
+use crate::common::account_model::{AssetIdentity, TradeId, TradingPair};
 use rust_decimal::Decimal;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,14 +20,14 @@ pub struct Trade {
 ///
 /// 这是一个环形缓冲区或流式容器，用于记录最近的成交。
 #[derive(Debug, Clone)]
-pub struct TradeFlow {
-    pub pair: TradingPair,
+pub struct TradeFlow<A: AssetIdentity> {
+    pub pair: TradingPair<A>,
     pub trades: Vec<Trade>,
     pub capacity: usize,
 }
 
-impl TradeFlow {
-    pub fn new(pair: TradingPair, capacity: usize) -> Self {
+impl<A: AssetIdentity> TradeFlow<A> {
+    pub fn new(pair: TradingPair<A>, capacity: usize) -> Self {
         Self {
             pair,
             trades: Vec::with_capacity(capacity),

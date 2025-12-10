@@ -1,28 +1,19 @@
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::fmt::{self, Debug, Display};
+use std::hash::Hash;
 use std::str::FromStr;
 
 // --- IDs & Identity Space ---
 
-/// 子账户身份 (SubAccount Identity)
-/// 系统中存在的有限子账户集合。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum SubAccountId {
-    Main,
-    Sub1,
-    Sub2,
-    Sub3,
-    Sub4,
-    Sub5,
-    // Future: Add more sub-accounts here
+/// 子账户身份特征 (SubAccount Identity Trait)
+/// 任何想要作为子账户身份的类型必须实现此 Trait。
+pub trait SubAccountIdentity:
+    Debug + Clone + Copy + PartialEq + Eq + Hash + Serialize + for<'a> Deserialize<'a> + Display + FromStr + Send + Sync + 'static
+{
 }
 
-impl fmt::Display for SubAccountId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
+impl<T> SubAccountIdentity for T where T: Debug + Clone + Copy + PartialEq + Eq + Hash + Serialize + for<'a> Deserialize<'a> + Display + FromStr + Send + Sync + 'static {}
 
 /// 交易所身份 (Venue Identity)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -40,51 +31,36 @@ impl fmt::Display for VenueId {
     }
 }
 
-/// 资产身份 (Asset Identity)
-/// 只有在此枚举中定义的资产才被系统承认。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AssetId {
-    BTC,
-    ETH,
-    USDT,
-    USDC,
-    BNB,
-    SOL,
-    // Future: Add more assets here
+/// 资产身份特征 (Asset Identity Trait)
+/// 任何想要作为资产身份的类型必须实现此 Trait。
+/// 这实现了资产定义的控制反转 (IoC)。
+/// 
+/// 要求：
+/// - Debug, Display: 用于日志和显示
+/// - Clone, Copy: 资产ID应该是轻量级的，像整数或短字符串枚举
+/// - PartialEq, Eq, Hash: 用于作为 HashMap 的 Key
+/// - Serialize, Deserialize: 用于序列化
+/// - FromStr: 用于从字符串解析 (如 API 返回 "BTC" -> Asset::BTC)
+/// - Send, Sync: 用于多线程
+pub trait AssetIdentity:
+    Debug + Clone + Copy + PartialEq + Eq + Hash + Serialize + for<'a> Deserialize<'a> + Display + FromStr + Send + Sync + 'static
+{
 }
 
-impl fmt::Display for AssetId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-
-impl FromStr for AssetId {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_uppercase().as_str() {
-            "BTC" => Ok(AssetId::BTC),
-            "ETH" => Ok(AssetId::ETH),
-            "USDT" => Ok(AssetId::USDT),
-            "USDC" => Ok(AssetId::USDC),
-            "BNB" => Ok(AssetId::BNB),
-            "SOL" => Ok(AssetId::SOL),
-            _ => Err(format!("Unknown AssetId: {}", s)),
-        }
-    }
-}
+// 自动为满足条件的类型实现 AssetIdentity
+impl<T> AssetIdentity for T where T: Debug + Clone + Copy + PartialEq + Eq + Hash + Serialize + for<'a> Deserialize<'a> + Display + FromStr + Send + Sync + 'static {}
 
 /// 交易对 (Trading Pair)
 /// 由两个资产身份组成的逻辑组合。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct TradingPair {
-    pub base: AssetId,
-    pub quote: AssetId,
+#[serde(bound = "A: AssetIdentity")]
+pub struct TradingPair<A: AssetIdentity> {
+    pub base: A,
+    pub quote: A,
 }
 
-impl TradingPair {
-    pub fn new(base: AssetId, quote: AssetId) -> Self {
+impl<A: AssetIdentity> TradingPair<A> {
+    pub fn new(base: A, quote: A) -> Self {
         Self { base, quote }
     }
 
@@ -93,7 +69,7 @@ impl TradingPair {
     }
 }
 
-impl fmt::Display for TradingPair {
+impl<A: AssetIdentity> fmt::Display for TradingPair<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}/{}", self.base, self.quote)
     }
@@ -248,11 +224,11 @@ pub struct OrderRequest {
 }
 
 #[derive(Debug, Clone)]
-pub struct Order {
-    pub sub_account_id: SubAccountId,
+pub struct Order<A: AssetIdentity, S: SubAccountIdentity> {
+    pub sub_account_id: S,
     pub id: OrderId, // Exchange ID
     pub client_order_id: Option<ClientOrderId>,
-    pub symbol: TradingPair,
+    pub symbol: TradingPair<A>,
     pub side: OrderSide,
     pub order_type: OrderType,
     pub price: Option<Decimal>,
@@ -265,9 +241,9 @@ pub struct Order {
 }
 
 #[derive(Debug, Clone)]
-pub struct Position {
-    pub sub_account_id: SubAccountId,
-    pub symbol: TradingPair,
+pub struct Position<A: AssetIdentity, S: SubAccountIdentity> {
+    pub sub_account_id: S,
+    pub symbol: TradingPair<A>,
     pub quantity: Decimal, // 正数为多，负数为空
     pub entry_price: Decimal,
     pub unrealized_pnl: Decimal,
@@ -275,9 +251,9 @@ pub struct Position {
 }
 
 #[derive(Debug, Clone)]
-pub struct Balance {
-    pub sub_account_id: SubAccountId,
-    pub asset: AssetId,
+pub struct Balance<A: AssetIdentity, S: SubAccountIdentity> {
+    pub sub_account_id: S,
+    pub asset: A,
     pub total: Decimal,
     pub available: Decimal,
     pub locked: Decimal,

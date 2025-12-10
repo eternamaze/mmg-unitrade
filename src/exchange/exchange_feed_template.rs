@@ -1,3 +1,4 @@
+use crate::common::account_model::{AssetIdentity, SubAccountIdentity};
 use crate::common::actor_trait::{AccessChannel, Actor, ChannelPair};
 use crate::dataform::kline::KlineSeries;
 use crate::dataform::orderbook::OrderBook;
@@ -6,6 +7,7 @@ use crate::exchange::exchange_domain::{
     ConnectorRequest, FeedCommand, KlineDomain, OrderBookDomain, TradeFlowDomain,
 };
 use async_trait::async_trait;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast, mpsc};
 
@@ -20,14 +22,14 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 /// 它是交易所三元组中的“感知层”。
 ///
 /// 使用关联类型 Id 来支持不同的市场寻址方式（如 TradingPair 或 Instrument）。
-pub trait ExchangeFeed: Actor {
+pub trait ExchangeFeed<S: SubAccountIdentity>: Actor {
     type Id: Send + Sync + 'static + Clone + std::hash::Hash + Eq;
 
     /// 使用连接器信道创建 Feed 实例
     ///
     /// Feed 不再持有 Connector 的引用，而是直接持有与 Connector 通信的信道。
     /// 这遵循了 Actor 模型“只共享信道，不共享本体”的原则。
-    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id>>) -> Self;
+    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id, S>>) -> Self;
 }
 
 // --- Standard Implementation ---
@@ -37,41 +39,52 @@ pub trait ExchangeFeed: Actor {
 /// 这是一个泛型结构体，实现了 `ExchangeFeed`。
 /// 它自动处理订阅逻辑，并将数据通道暴露给外部。
 /// 它不再依赖 `Connector` 本体，而是依赖 `connector_tx`。
-pub struct StandardFeed<I> {
-    connector_tx: mpsc::Sender<ConnectorRequest<I>>,
+pub struct StandardFeed<I, A, S>
+where
+    S: SubAccountIdentity,
+{
+    connector_tx: mpsc::Sender<ConnectorRequest<I, S>>,
     command_tx: mpsc::Sender<FeedCommand<I>>,
     command_rx: Arc<Mutex<Option<mpsc::Receiver<FeedCommand<I>>>>>,
+    _marker: PhantomData<A>,
 }
 
-impl<I> StandardFeed<I>
+impl<I, A, S> StandardFeed<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
-    pub fn new(connector_tx: mpsc::Sender<ConnectorRequest<I>>) -> Self {
+    pub fn new(connector_tx: mpsc::Sender<ConnectorRequest<I, S>>) -> Self {
         let (command_tx, command_rx) = mpsc::channel(100);
         Self {
             connector_tx,
             command_tx,
             command_rx: Arc::new(Mutex::new(Some(command_rx))),
+            _marker: PhantomData,
         }
     }
 }
 
-impl<I> ExchangeFeed for StandardFeed<I>
+impl<I, A, S> ExchangeFeed<S> for StandardFeed<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     type Id = I;
 
-    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id>>) -> Self {
+    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id, S>>) -> Self {
         Self::new(connector_tx)
     }
 }
 
 #[async_trait]
-impl<I> Actor for StandardFeed<I>
+impl<I, A, S> Actor for StandardFeed<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     async fn start(&self) -> anyhow::Result<()> {
         let mut command_rx = self
@@ -124,13 +137,15 @@ where
 
 // --- Access Channels ---
 
-impl<I> AccessChannel<OrderBookDomain> for StandardFeed<I>
+impl<I, A, S> AccessChannel<OrderBookDomain> for StandardFeed<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     type Id = I;
     type Sender = mpsc::Sender<FeedCommand<I>>;
-    type Receiver = broadcast::Receiver<OrderBook>;
+    type Receiver = broadcast::Receiver<OrderBook<A>>;
 
     fn access_channel(
         &self,
@@ -145,13 +160,15 @@ where
     }
 }
 
-impl<I> AccessChannel<TradeFlowDomain> for StandardFeed<I>
+impl<I, A, S> AccessChannel<TradeFlowDomain> for StandardFeed<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     type Id = I;
     type Sender = mpsc::Sender<FeedCommand<I>>;
-    type Receiver = broadcast::Receiver<TradeFlow>;
+    type Receiver = broadcast::Receiver<TradeFlow<A>>;
 
     fn access_channel(
         &self,
@@ -165,13 +182,15 @@ where
     }
 }
 
-impl<I> AccessChannel<KlineDomain> for StandardFeed<I>
+impl<I, A, S> AccessChannel<KlineDomain> for StandardFeed<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     type Id = I;
     type Sender = mpsc::Sender<FeedCommand<I>>;
-    type Receiver = broadcast::Receiver<KlineSeries>;
+    type Receiver = broadcast::Receiver<KlineSeries<A>>;
 
     fn access_channel(
         &self,

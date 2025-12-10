@@ -1,4 +1,4 @@
-use crate::common::account_model::SubAccountId;
+use crate::common::account_model::{AssetIdentity, SubAccountIdentity};
 use crate::common::actor_trait::{AccessChannel, Actor, ChannelPair};
 use crate::dataform::kline::KlineSeries;
 use crate::dataform::orderbook::OrderBook;
@@ -26,32 +26,34 @@ use tokio::sync::{broadcast, mpsc};
 /// Exchange 内部会将请求转发给 Feed 或 Gateway。
 ///
 /// 泛型 `I` 代表 Instrument (标的) 的标识符类型。
-pub struct Exchange<C, F, G, I> {
+pub struct Exchange<C, F, G, I, A, S> {
     /// 连接器是内部基础设施，不对外暴露。
     /// 外部只能通过 Feed 和 Gateway 与系统交互。
     connector: Option<Arc<C>>,
     feed: Option<F>,
     gateway: Option<G>,
-    _marker: PhantomData<I>,
+    _marker: PhantomData<(I, A, S)>,
 }
 
-impl<C, F, G, I> Exchange<C, F, G, I>
+impl<C, F, G, I, A, S> Exchange<C, F, G, I, A, S>
 where
     C: ExchangeConnector
         + AccessChannel<
             ConnectorControlDomain,
             Id = (),
-            Sender = mpsc::Sender<ConnectorRequest<I>>,
+            Sender = mpsc::Sender<ConnectorRequest<I, S>>,
             Receiver = (),
-        > + AccessChannel<OrderBookDomain, Id = I, Receiver = broadcast::Receiver<OrderBook>>
-        + AccessChannel<TradeFlowDomain, Id = I, Receiver = broadcast::Receiver<TradeFlow>>
-        + AccessChannel<KlineDomain, Id = I, Receiver = broadcast::Receiver<KlineSeries>>
-        + AccessChannel<OrderDomain, Id = (), Receiver = broadcast::Receiver<OrderUpdate<I>>>
-        + AccessChannel<PositionDomain, Id = (), Receiver = broadcast::Receiver<PositionUpdate>>
-        + AccessChannel<BalanceDomain, Id = (), Receiver = broadcast::Receiver<BalanceUpdate>>,
-    F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway<Id = I>,
+        > + AccessChannel<OrderBookDomain, Id = I, Receiver = broadcast::Receiver<OrderBook<A>>>
+        + AccessChannel<TradeFlowDomain, Id = I, Receiver = broadcast::Receiver<TradeFlow<A>>>
+        + AccessChannel<KlineDomain, Id = I, Receiver = broadcast::Receiver<KlineSeries<A>>>
+        + AccessChannel<OrderDomain, Id = (), Receiver = broadcast::Receiver<OrderUpdate<I, A, S>>>
+        + AccessChannel<PositionDomain, Id = (), Receiver = broadcast::Receiver<PositionUpdate<A, S>>>
+        + AccessChannel<BalanceDomain, Id = (), Receiver = broadcast::Receiver<BalanceUpdate<A, S>>>,
+    F: ExchangeFeed<S, Id = I>,
+    G: ExchangeGateway<S, Id = I>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     pub fn new(connector: C, feed: F, gateway: G) -> Self {
         Self {
@@ -89,12 +91,14 @@ where
 }
 
 #[async_trait]
-impl<C, F, G, I> Actor for Exchange<C, F, G, I>
+impl<C, F, G, I, A, S> Actor for Exchange<C, F, G, I, A, S>
 where
     C: ExchangeConnector,
-    F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway,
+    F: ExchangeFeed<S, Id = I>,
+    G: ExchangeGateway<S>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     async fn start(&self) -> anyhow::Result<()> {
         if let Some(c) = &self.connector {
@@ -126,16 +130,18 @@ where
 
 // --- Feed Channel Forwarding ---
 
-impl<C, F, G, I> AccessChannel<OrderBookDomain> for Exchange<C, F, G, I>
+impl<C, F, G, I, A, S> AccessChannel<OrderBookDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<OrderBookDomain, Id = I, Receiver = broadcast::Receiver<OrderBook>>,
-    F: ExchangeFeed<Id = I> + AccessChannel<OrderBookDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
-    G: ExchangeGateway,
+    C: ExchangeConnector + AccessChannel<OrderBookDomain, Id = I, Receiver = broadcast::Receiver<OrderBook<A>>>,
+    F: ExchangeFeed<S, Id = I> + AccessChannel<OrderBookDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
+    G: ExchangeGateway<S>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     type Id = I;
     type Sender = mpsc::Sender<FeedCommand<I>>;
-    type Receiver = broadcast::Receiver<OrderBook>;
+    type Receiver = broadcast::Receiver<OrderBook<A>>;
 
     fn access_channel(
         &self,
@@ -154,16 +160,18 @@ where
     }
 }
 
-impl<C, F, G, I> AccessChannel<TradeFlowDomain> for Exchange<C, F, G, I>
+impl<C, F, G, I, A, S> AccessChannel<TradeFlowDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<TradeFlowDomain, Id = I, Receiver = broadcast::Receiver<TradeFlow>>,
-    F: ExchangeFeed<Id = I> + AccessChannel<TradeFlowDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
-    G: ExchangeGateway,
+    C: ExchangeConnector + AccessChannel<TradeFlowDomain, Id = I, Receiver = broadcast::Receiver<TradeFlow<A>>>,
+    F: ExchangeFeed<S, Id = I> + AccessChannel<TradeFlowDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
+    G: ExchangeGateway<S>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     type Id = I;
     type Sender = mpsc::Sender<FeedCommand<I>>;
-    type Receiver = broadcast::Receiver<TradeFlow>;
+    type Receiver = broadcast::Receiver<TradeFlow<A>>;
 
     fn access_channel(
         &self,
@@ -182,16 +190,18 @@ where
     }
 }
 
-impl<C, F, G, I> AccessChannel<KlineDomain> for Exchange<C, F, G, I>
+impl<C, F, G, I, A, S> AccessChannel<KlineDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<KlineDomain, Id = I, Receiver = broadcast::Receiver<KlineSeries>>,
-    F: ExchangeFeed<Id = I> + AccessChannel<KlineDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
-    G: ExchangeGateway,
+    C: ExchangeConnector + AccessChannel<KlineDomain, Id = I, Receiver = broadcast::Receiver<KlineSeries<A>>>,
+    F: ExchangeFeed<S, Id = I> + AccessChannel<KlineDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
+    G: ExchangeGateway<S>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     type Id = I;
     type Sender = mpsc::Sender<FeedCommand<I>>;
-    type Receiver = broadcast::Receiver<KlineSeries>;
+    type Receiver = broadcast::Receiver<KlineSeries<A>>;
 
     fn access_channel(
         &self,
@@ -214,16 +224,18 @@ where
 
 // --- Gateway Channel Forwarding ---
 
-impl<C, F, G, I> AccessChannel<OrderDomain> for Exchange<C, F, G, I>
+impl<C, F, G, I, A, S> AccessChannel<OrderDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<OrderDomain, Id = (), Receiver = broadcast::Receiver<OrderUpdate<I>>>,
-    F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway<Id = I> + AccessChannel<OrderDomain, Id = SubAccountId, Sender = mpsc::Sender<OrderCommand<I>>>,
+    C: ExchangeConnector + AccessChannel<OrderDomain, Id = (), Receiver = broadcast::Receiver<OrderUpdate<I, A, S>>>,
+    F: ExchangeFeed<S, Id = I>,
+    G: ExchangeGateway<S, Id = I> + AccessChannel<OrderDomain, Id = S, Sender = mpsc::Sender<OrderCommand<I, S>>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
-    type Id = SubAccountId;
-    type Sender = mpsc::Sender<OrderCommand<I>>;
-    type Receiver = broadcast::Receiver<OrderUpdate<I>>;
+    type Id = S;
+    type Sender = mpsc::Sender<OrderCommand<I, S>>;
+    type Receiver = broadcast::Receiver<OrderUpdate<I, A, S>>;
 
     fn access_channel(
         &self,
@@ -242,16 +254,18 @@ where
     }
 }
 
-impl<C, F, G, I> AccessChannel<PositionDomain> for Exchange<C, F, G, I>
+impl<C, F, G, I, A, S> AccessChannel<PositionDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<PositionDomain, Id = (), Receiver = broadcast::Receiver<PositionUpdate>>,
-    F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway<Id = I> + AccessChannel<PositionDomain, Id = SubAccountId, Sender = mpsc::Sender<PositionCommand<I>>>,
+    C: ExchangeConnector + AccessChannel<PositionDomain, Id = (), Receiver = broadcast::Receiver<PositionUpdate<A, S>>>,
+    F: ExchangeFeed<S, Id = I>,
+    G: ExchangeGateway<S, Id = I> + AccessChannel<PositionDomain, Id = S, Sender = mpsc::Sender<PositionCommand<I, S>>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
-    type Id = SubAccountId;
-    type Sender = mpsc::Sender<PositionCommand<I>>;
-    type Receiver = broadcast::Receiver<PositionUpdate>;
+    type Id = S;
+    type Sender = mpsc::Sender<PositionCommand<I, S>>;
+    type Receiver = broadcast::Receiver<PositionUpdate<A, S>>;
 
     fn access_channel(
         &self,
@@ -270,16 +284,18 @@ where
     }
 }
 
-impl<C, F, G, I> AccessChannel<BalanceDomain> for Exchange<C, F, G, I>
+impl<C, F, G, I, A, S> AccessChannel<BalanceDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<BalanceDomain, Id = (), Receiver = broadcast::Receiver<BalanceUpdate>>,
-    F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway<Id = I> + AccessChannel<BalanceDomain, Id = SubAccountId, Sender = mpsc::Sender<BalanceCommand>>,
+    C: ExchangeConnector + AccessChannel<BalanceDomain, Id = (), Receiver = broadcast::Receiver<BalanceUpdate<A, S>>>,
+    F: ExchangeFeed<S, Id = I>,
+    G: ExchangeGateway<S, Id = I> + AccessChannel<BalanceDomain, Id = S, Sender = mpsc::Sender<BalanceCommand<S>>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
-    type Id = SubAccountId;
-    type Sender = mpsc::Sender<BalanceCommand>;
-    type Receiver = broadcast::Receiver<BalanceUpdate>;
+    type Id = S;
+    type Sender = mpsc::Sender<BalanceCommand<S>>;
+    type Receiver = broadcast::Receiver<BalanceUpdate<A, S>>;
 
     fn access_channel(
         &self,

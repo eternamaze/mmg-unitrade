@@ -1,4 +1,4 @@
-use crate::common::account_model::{KlineInterval, TradingPair};
+use crate::common::account_model::{AssetIdentity, KlineInterval, TradingPair};
 use rust_decimal::Decimal;
 
 #[derive(Debug, Clone, Copy)]
@@ -14,14 +14,14 @@ pub struct Kline {
 
 /// K线图 (The Canvas)
 #[derive(Debug, Clone)]
-pub struct KlineSeries {
-    pub pair: TradingPair,
+pub struct KlineSeries<A: AssetIdentity> {
+    pub pair: TradingPair<A>,
     pub interval: KlineInterval,
     pub candles: Vec<Kline>,
 }
 
-impl KlineSeries {
-    pub fn new(pair: TradingPair, interval: KlineInterval) -> Self {
+impl<A: AssetIdentity> KlineSeries<A> {
+    pub fn new(pair: TradingPair<A>, interval: KlineInterval) -> Self {
         Self {
             pair,
             interval,

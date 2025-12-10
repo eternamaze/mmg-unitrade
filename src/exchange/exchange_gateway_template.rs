@@ -1,10 +1,11 @@
-use crate::common::account_model::{SubAccountId};
+use crate::common::account_model::{AssetIdentity, SubAccountIdentity};
 use crate::common::actor_trait::{AccessChannel, Actor, ChannelPair};
 use crate::exchange::exchange_domain::{
     BalanceCommand, BalanceDomain, BalanceUpdate, ConnectorRequest,
     OrderCommand, OrderDomain, OrderUpdate, PositionCommand, PositionDomain, PositionUpdate,
 };
 use async_trait::async_trait;
+use std::marker::PhantomData;
 use std::sync::Arc;
 use tokio::sync::{Mutex, broadcast, mpsc};
 
@@ -16,11 +17,11 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 ///
 /// 负责账户模型的 CRUD 代理。
 /// 它是交易所三元组中的“执行层”。
-pub trait ExchangeGateway: Actor {
+pub trait ExchangeGateway<S: SubAccountIdentity>: Actor {
     type Id: Send + Sync + 'static + Clone + std::hash::Hash + Eq;
 
     /// 使用连接器信道创建 Gateway 实例
-    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id>>) -> Self;
+    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id, S>>) -> Self;
 }
 
 // --- Standard Implementation ---
@@ -29,24 +30,31 @@ pub trait ExchangeGateway: Actor {
 ///
 /// 这是一个泛型结构体，实现了 `ExchangeGateway`。
 /// 它自动处理订单路由和账户状态查询。
-pub struct StandardGateway<I> {
-    connector_tx: mpsc::Sender<ConnectorRequest<I>>,
+pub struct StandardGateway<I, A, S>
+where
+    S: SubAccountIdentity,
+{
+    connector_tx: mpsc::Sender<ConnectorRequest<I, S>>,
 
-    order_tx: mpsc::Sender<OrderCommand<I>>,
-    order_rx: Arc<Mutex<Option<mpsc::Receiver<OrderCommand<I>>>>>,
+    order_tx: mpsc::Sender<OrderCommand<I, S>>,
+    order_rx: Arc<Mutex<Option<mpsc::Receiver<OrderCommand<I, S>>>>>,
 
-    position_tx: mpsc::Sender<PositionCommand<I>>,
-    position_rx: Arc<Mutex<Option<mpsc::Receiver<PositionCommand<I>>>>>,
+    position_tx: mpsc::Sender<PositionCommand<I, S>>,
+    position_rx: Arc<Mutex<Option<mpsc::Receiver<PositionCommand<I, S>>>>>,
 
-    balance_tx: mpsc::Sender<BalanceCommand>,
-    balance_rx: Arc<Mutex<Option<mpsc::Receiver<BalanceCommand>>>>,
+    balance_tx: mpsc::Sender<BalanceCommand<S>>,
+    balance_rx: Arc<Mutex<Option<mpsc::Receiver<BalanceCommand<S>>>>>,
+
+    _marker: PhantomData<A>,
 }
 
-impl<I> StandardGateway<I>
+impl<I, A, S> StandardGateway<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
-    pub fn new(connector_tx: mpsc::Sender<ConnectorRequest<I>>) -> Self {
+    pub fn new(connector_tx: mpsc::Sender<ConnectorRequest<I, S>>) -> Self {
         let (order_tx, order_rx) = mpsc::channel(100);
         let (position_tx, position_rx) = mpsc::channel(100);
         let (balance_tx, balance_rx) = mpsc::channel(100);
@@ -59,25 +67,30 @@ where
             position_rx: Arc::new(Mutex::new(Some(position_rx))),
             balance_tx,
             balance_rx: Arc::new(Mutex::new(Some(balance_rx))),
+            _marker: PhantomData,
         }
     }
 }
 
-impl<I> ExchangeGateway for StandardGateway<I>
+impl<I, A, S> ExchangeGateway<S> for StandardGateway<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     type Id = I;
 
-    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id>>) -> Self {
+    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id, S>>) -> Self {
         Self::new(connector_tx)
     }
 }
 
 #[async_trait]
-impl<I> Actor for StandardGateway<I>
+impl<I, A, S> Actor for StandardGateway<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     async fn start(&self) -> anyhow::Result<()> {
         let mut order_rx = self
@@ -260,13 +273,15 @@ where
 
 // --- Access Channels ---
 
-impl<I> AccessChannel<OrderDomain> for StandardGateway<I>
+impl<I, A, S> AccessChannel<OrderDomain> for StandardGateway<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
-    type Id = SubAccountId;
-    type Sender = mpsc::Sender<OrderCommand<I>>;
-    type Receiver = broadcast::Receiver<OrderUpdate<I>>;
+    type Id = S;
+    type Sender = mpsc::Sender<OrderCommand<I, S>>;
+    type Receiver = broadcast::Receiver<OrderUpdate<I, A, S>>;
 
     fn access_channel(
         &self,
@@ -280,13 +295,15 @@ where
     }
 }
 
-impl<I> AccessChannel<PositionDomain> for StandardGateway<I>
+impl<I, A, S> AccessChannel<PositionDomain> for StandardGateway<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
-    type Id = SubAccountId;
-    type Sender = mpsc::Sender<PositionCommand<I>>;
-    type Receiver = broadcast::Receiver<PositionUpdate>;
+    type Id = S;
+    type Sender = mpsc::Sender<PositionCommand<I, S>>;
+    type Receiver = broadcast::Receiver<PositionUpdate<A, S>>;
 
     fn access_channel(
         &self,
@@ -300,13 +317,15 @@ where
     }
 }
 
-impl<I> AccessChannel<BalanceDomain> for StandardGateway<I>
+impl<I, A, S> AccessChannel<BalanceDomain> for StandardGateway<I, A, S>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
-    type Id = SubAccountId;
-    type Sender = mpsc::Sender<BalanceCommand>;
-    type Receiver = broadcast::Receiver<BalanceUpdate>;
+    type Id = S;
+    type Sender = mpsc::Sender<BalanceCommand<S>>;
+    type Receiver = broadcast::Receiver<BalanceUpdate<A, S>>;
 
     fn access_channel(
         &self,

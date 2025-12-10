@@ -1,4 +1,4 @@
-use crate::common::account_model::{OrderId, SubAccountId};
+use crate::common::account_model::OrderId;
 use thiserror::Error;
 
 #[derive(Error, Debug, Clone)]
@@ -14,7 +14,7 @@ pub enum ExchangeError {
 
     #[error("Order not found: {id} in account {sub_account_id}")]
     OrderNotFound {
-        sub_account_id: SubAccountId,
+        sub_account_id: String,
         id: OrderId,
     },
 

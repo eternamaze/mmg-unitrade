@@ -1,4 +1,4 @@
-use crate::common::account_model::{OrderId, OrderRequest, SubAccountId};
+use crate::common::account_model::{OrderId, OrderRequest, SubAccountIdentity, AssetIdentity};
 use crate::common::actor_trait::{AccessChannel, Actor, ChannelPair};
 use crate::dataform::kline::KlineSeries;
 use crate::dataform::orderbook::OrderBook;
@@ -47,11 +47,13 @@ pub trait ExchangeConnector:
 /// 而不需要关心 Actor 生命周期、通道管理、锁等基础设施。
 #[async_trait]
 pub trait ConnectorImpl: Send + Sync + 'static {
+    type Asset: AssetIdentity;
+    type SubAccount: SubAccountIdentity;
     type Instrument: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug;
 
     /// 初始化并启动连接器
     /// 在这里建立 WebSocket 连接，并保存 channels 以便后续推送数据。
-    async fn start(&self, channels: ConnectorChannels<Self::Instrument>) -> anyhow::Result<()>;
+    async fn start(&self, channels: ConnectorChannels<Self::Instrument, Self::Asset, Self::SubAccount>) -> anyhow::Result<()>;
 
     // --- Request Handlers ---
 
@@ -68,19 +70,19 @@ pub trait ConnectorImpl: Send + Sync + 'static {
 
     async fn on_submit_order(
         &self,
-        sub_account_id: SubAccountId,
+        sub_account_id: Self::SubAccount,
         instrument: Self::Instrument,
         req: OrderRequest,
     ) -> anyhow::Result<()>;
     async fn on_cancel_order(
         &self,
-        sub_account_id: SubAccountId,
+        sub_account_id: Self::SubAccount,
         instrument: Self::Instrument,
         order_id: OrderId,
     ) -> anyhow::Result<()>;
     async fn on_amend_order(
         &self,
-        sub_account_id: SubAccountId,
+        sub_account_id: Self::SubAccount,
         instrument: Self::Instrument,
         order_id: OrderId,
         req: OrderRequest,
@@ -88,29 +90,29 @@ pub trait ConnectorImpl: Send + Sync + 'static {
 
     async fn on_fetch_open_orders(
         &self,
-        sub_account_id: SubAccountId,
+        sub_account_id: Self::SubAccount,
         instrument: Option<Self::Instrument>,
     ) -> anyhow::Result<()>;
 
     async fn on_fetch_order(
         &self,
-        sub_account_id: SubAccountId,
+        sub_account_id: Self::SubAccount,
         instrument: Self::Instrument,
         order_id: OrderId,
     ) -> anyhow::Result<()>;
 
     async fn on_fetch_positions(
         &self,
-        sub_account_id: SubAccountId,
+        sub_account_id: Self::SubAccount,
         instrument: Option<Self::Instrument>,
     ) -> anyhow::Result<()>;
 
-    async fn on_fetch_balances(&self, sub_account_id: SubAccountId) -> anyhow::Result<()>;
+    async fn on_fetch_balances(&self, sub_account_id: Self::SubAccount) -> anyhow::Result<()>;
 
     // Default implementations for optional features
     async fn on_batch_submit_order(
         &self,
-        _sub_account_id: SubAccountId,
+        _sub_account_id: Self::SubAccount,
         _instrument: Self::Instrument,
         _reqs: Vec<OrderRequest>,
         _atomic: bool,
@@ -119,7 +121,7 @@ pub trait ConnectorImpl: Send + Sync + 'static {
     }
     async fn on_batch_cancel_order(
         &self,
-        _sub_account_id: SubAccountId,
+        _sub_account_id: Self::SubAccount,
         _instrument: Self::Instrument,
         _order_ids: Vec<OrderId>,
         _atomic: bool,
@@ -128,7 +130,7 @@ pub trait ConnectorImpl: Send + Sync + 'static {
     }
     async fn on_batch_amend_order(
         &self,
-        _sub_account_id: SubAccountId,
+        _sub_account_id: Self::SubAccount,
         _instrument: Self::Instrument,
         _amends: Vec<(OrderId, OrderRequest)>,
         _atomic: bool,
@@ -143,26 +145,28 @@ pub trait ConnectorImpl: Send + Sync + 'static {
 /// `ConnectorImpl` 在 `start` 时会收到这个结构体。
 /// 当收到 WebSocket 消息时，通过这些通道将数据推送到系统内部。
 #[derive(Clone)]
-pub struct ConnectorChannels<I> {
-    pub orderbook_txs: Arc<RwLock<HashMap<I, broadcast::Sender<OrderBook>>>>,
-    pub trade_txs: Arc<RwLock<HashMap<I, broadcast::Sender<TradeFlow>>>>,
-    pub kline_txs: Arc<RwLock<HashMap<I, broadcast::Sender<KlineSeries>>>>,
+pub struct ConnectorChannels<I, A: AssetIdentity, S: SubAccountIdentity> {
+    pub orderbook_txs: Arc<RwLock<HashMap<I, broadcast::Sender<OrderBook<A>>>>>,
+    pub trade_txs: Arc<RwLock<HashMap<I, broadcast::Sender<TradeFlow<A>>>>>,
+    pub kline_txs: Arc<RwLock<HashMap<I, broadcast::Sender<KlineSeries<A>>>>>,
 
     // Execution Updates
-    pub order_update_tx: broadcast::Sender<OrderUpdate<I>>,
-    pub position_update_tx: broadcast::Sender<PositionUpdate>,
-    pub balance_update_tx: broadcast::Sender<BalanceUpdate>,
+    pub order_update_tx: broadcast::Sender<OrderUpdate<I, A, S>>,
+    pub position_update_tx: broadcast::Sender<PositionUpdate<A, S>>,
+    pub balance_update_tx: broadcast::Sender<BalanceUpdate<A, S>>,
 
     // Network Status
     pub status_tx: broadcast::Sender<NetworkStatus>,
 }
 
-impl<I> ConnectorChannels<I>
+impl<I, A, S> ConnectorChannels<I, A, S>
 where
     I: std::hash::Hash + Eq + Clone,
+    A: AssetIdentity,
+    S: SubAccountIdentity,
 {
     /// 获取或创建 OrderBook 通道
-    pub fn get_orderbook_tx(&self, instrument: &I) -> broadcast::Sender<OrderBook> {
+    pub fn get_orderbook_tx(&self, instrument: &I) -> broadcast::Sender<OrderBook<A>> {
         let mut map = self.orderbook_txs.write().unwrap();
         map.entry(instrument.clone())
             .or_insert_with(|| {
@@ -173,7 +177,7 @@ where
     }
 
     /// 获取或创建 TradeFlow 通道
-    pub fn get_trade_tx(&self, instrument: &I) -> broadcast::Sender<TradeFlow> {
+    pub fn get_trade_tx(&self, instrument: &I) -> broadcast::Sender<TradeFlow<A>> {
         let mut map = self.trade_txs.write().unwrap();
         map.entry(instrument.clone())
             .or_insert_with(|| {
@@ -184,7 +188,7 @@ where
     }
 
     /// 获取或创建 KlineSeries 通道
-    pub fn get_kline_tx(&self, instrument: &I) -> broadcast::Sender<KlineSeries> {
+    pub fn get_kline_tx(&self, instrument: &I) -> broadcast::Sender<KlineSeries<A>> {
         let mut map = self.kline_txs.write().unwrap();
         map.entry(instrument.clone())
             .or_insert_with(|| {
@@ -200,17 +204,21 @@ where
 /// 这是一个泛型结构体，实现了 `ExchangeConnector`。
 /// 它封装了 Actor 循环、通道管理和请求分发。
 /// 开发者只需要提供 `Impl` (业务逻辑实现)。
-pub struct StandardConnector<I, Impl> {
+pub struct StandardConnector<I, Impl>
+where
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    Impl: ConnectorImpl<Instrument = I>,
+{
     implementation: Arc<Impl>,
 
     // Channels
     network_tx: mpsc::Sender<NetworkCommand>,
     network_rx: Arc<Mutex<Option<mpsc::Receiver<NetworkCommand>>>>,
 
-    request_tx: mpsc::Sender<ConnectorRequest<I>>,
-    request_rx: Arc<Mutex<Option<mpsc::Receiver<ConnectorRequest<I>>>>>,
+    request_tx: mpsc::Sender<ConnectorRequest<I, Impl::SubAccount>>,
+    request_rx: Arc<Mutex<Option<mpsc::Receiver<ConnectorRequest<I, Impl::SubAccount>>>>>,
 
-    channels: ConnectorChannels<I>,
+    channels: ConnectorChannels<I, Impl::Asset, Impl::SubAccount>,
 }
 
 impl<I, Impl> StandardConnector<I, Impl>
@@ -432,7 +440,7 @@ where
 {
     type Id = I;
     type Sender = ();
-    type Receiver = broadcast::Receiver<OrderBook>;
+    type Receiver = broadcast::Receiver<OrderBook<Impl::Asset>>;
 
     fn access_channel(
         &self,
@@ -454,7 +462,7 @@ where
 {
     type Id = I;
     type Sender = ();
-    type Receiver = broadcast::Receiver<TradeFlow>;
+    type Receiver = broadcast::Receiver<TradeFlow<Impl::Asset>>;
 
     fn access_channel(
         &self,
@@ -476,7 +484,7 @@ where
 {
     type Id = I;
     type Sender = ();
-    type Receiver = broadcast::Receiver<KlineSeries>;
+    type Receiver = broadcast::Receiver<KlineSeries<Impl::Asset>>;
 
     fn access_channel(
         &self,
@@ -499,7 +507,7 @@ where
     Impl: ConnectorImpl<Instrument = I>,
 {
     type Id = ();
-    type Sender = mpsc::Sender<ConnectorRequest<I>>;
+    type Sender = mpsc::Sender<ConnectorRequest<I, Impl::SubAccount>>;
     type Receiver = ();
 
     fn access_channel(
@@ -521,7 +529,7 @@ where
 {
     type Id = ();
     type Sender = ();
-    type Receiver = broadcast::Receiver<OrderUpdate<I>>;
+    type Receiver = broadcast::Receiver<OrderUpdate<I, Impl::Asset, Impl::SubAccount>>;
 
     fn access_channel(
         &self,
@@ -542,7 +550,7 @@ where
 {
     type Id = ();
     type Sender = ();
-    type Receiver = broadcast::Receiver<PositionUpdate>;
+    type Receiver = broadcast::Receiver<PositionUpdate<Impl::Asset, Impl::SubAccount>>;
 
     fn access_channel(
         &self,
@@ -563,7 +571,7 @@ where
 {
     type Id = ();
     type Sender = ();
-    type Receiver = broadcast::Receiver<BalanceUpdate>;
+    type Receiver = broadcast::Receiver<BalanceUpdate<Impl::Asset, Impl::SubAccount>>;
 
     fn access_channel(
         &self,

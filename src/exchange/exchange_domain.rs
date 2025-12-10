@@ -1,5 +1,5 @@
 use crate::common::account_model::{
-    Balance, ClientOrderId, KlineInterval, Order, OrderId, OrderRequest, Position, SubAccountId,
+    AssetIdentity, Balance, ClientOrderId, KlineInterval, Order, OrderId, OrderRequest, Position, SubAccountIdentity,
 };
 use thiserror::Error;
 
@@ -156,7 +156,7 @@ pub enum ChannelType {
 ///
 /// 使用泛型 `I` (Instrument) 来确保类型安全的标的引用。
 #[derive(Debug, Clone)]
-pub enum ConnectorRequest<I> {
+pub enum ConnectorRequest<I, S: SubAccountIdentity> {
     // --- Feed Requests ---
 
     /// 订阅行情指令
@@ -185,7 +185,7 @@ pub enum ConnectorRequest<I> {
     /// 请求 Connector 向交易所发送一个新的订单。
     SubmitOrder {
         /// 子账户 ID (用于多账户管理)
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         /// 交易标的
         instrument: I,
         /// 订单详细参数 (价格、数量、类型等)
@@ -196,7 +196,7 @@ pub enum ConnectorRequest<I> {
     ///
     /// 请求 Connector 撤销一个未完全成交的订单。
     CancelOrder {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         /// 要取消的订单 ID (交易所 ID)
         order_id: OrderId,
@@ -207,7 +207,7 @@ pub enum ConnectorRequest<I> {
     /// 请求 Connector 修改一个现有订单的参数 (如价格或数量)。
     /// 注意：并非所有交易所都支持原子修改，部分实现可能需要先撤后发。
     AmendOrder {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         order_id: OrderId,
         req: OrderRequest,
@@ -219,7 +219,7 @@ pub enum ConnectorRequest<I> {
     ///
     /// 请求 Connector 一次性发送多个订单。
     BatchSubmitOrder {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         reqs: Vec<OrderRequest>,
         /// 是否要求原子性 (All-or-Nothing)。
@@ -229,7 +229,7 @@ pub enum ConnectorRequest<I> {
 
     /// 批量取消订单指令
     BatchCancelOrder {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         order_ids: Vec<OrderId>,
         atomic: bool,
@@ -237,7 +237,7 @@ pub enum ConnectorRequest<I> {
 
     /// 批量修改订单指令
     BatchAmendOrder {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         amends: Vec<(OrderId, OrderRequest)>,
         atomic: bool,
@@ -250,7 +250,7 @@ pub enum ConnectorRequest<I> {
     /// 请求 Connector 获取当前未结束的订单列表。
     /// 结果通常通过 `OrderUpdate` 通道异步返回，或作为 Future 的结果返回 (取决于具体实现模式)。
     FetchOpenOrders {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         /// 可选的标的过滤。如果为 None，则查询该账户下所有标的的挂单。
         instrument: Option<I>,
     },
@@ -259,7 +259,7 @@ pub enum ConnectorRequest<I> {
     ///
     /// 请求 Connector 获取某个特定订单的最新状态。
     FetchOrder {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         order_id: OrderId,
     },
@@ -268,14 +268,14 @@ pub enum ConnectorRequest<I> {
     ///
     /// 请求 Connector 获取当前的持仓信息。
     FetchPositions {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: Option<I>,
     },
 
     /// 查询余额指令
     ///
     /// 请求 Connector 获取账户的资产余额信息。
-    FetchBalances { sub_account_id: SubAccountId },
+    FetchBalances { sub_account_id: S },
 }
 
 // --- Feed DSL ---
@@ -348,14 +348,14 @@ pub enum GatewayError {
 ///
 /// 使用泛型 `I` (Instrument) 来指定操作对象。
 #[derive(Debug, Clone)]
-pub enum OrderCommand<I> {
+pub enum OrderCommand<I, S: SubAccountIdentity> {
     // --- Single Operations ---
 
     /// 创建订单指令
     ///
     /// 请求创建一个新的订单。
     Create {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         req: OrderRequest,
     },
@@ -364,7 +364,7 @@ pub enum OrderCommand<I> {
     ///
     /// 请求取消一个指定的订单。
     Cancel {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         id: OrderId,
     },
@@ -373,7 +373,7 @@ pub enum OrderCommand<I> {
     ///
     /// 请求修改一个现有订单的参数（如价格或数量）。
     Amend {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         id: OrderId,
         req: OrderRequest,
@@ -386,7 +386,7 @@ pub enum OrderCommand<I> {
     /// 请求一次性创建多个订单。
     /// `atomic`: 如果为 true，且交易所支持，则这些订单要么全部成功，要么全部失败。
     BatchCreate {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         reqs: Vec<OrderRequest>,
         /// If true, the batch is atomic (all or nothing), if supported by exchange.
@@ -395,7 +395,7 @@ pub enum OrderCommand<I> {
 
     /// 批量取消订单指令
     BatchCancel {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         ids: Vec<OrderId>,
         atomic: bool,
@@ -403,7 +403,7 @@ pub enum OrderCommand<I> {
 
     /// 批量修改订单指令
     BatchAmend {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         amends: Vec<(OrderId, OrderRequest)>,
         atomic: bool,
@@ -416,13 +416,13 @@ pub enum OrderCommand<I> {
     /// 查询当前未完成的订单列表。
     /// `instrument`: 可选。如果提供，则只查询该标的的挂单；否则查询所有。
     GetOpenOrders {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: Option<I>,
     },
 
     /// 查询特定订单指令
     GetOrder {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: I,
         id: OrderId,
     },
@@ -433,7 +433,7 @@ pub enum OrderCommand<I> {
 /// 描述订单生命周期中的各种事件。
 /// 这些事件由 Connector 推送给 Gateway 或 Strategy。
 #[derive(Debug, Clone)]
-pub enum OrderUpdate<I> {
+pub enum OrderUpdate<I, A: AssetIdentity, S: SubAccountIdentity> {
     // --- Command Results (Ack/Nack) ---
 
     /// 请求已接受
@@ -441,7 +441,7 @@ pub enum OrderUpdate<I> {
     /// 交易所已收到并接受了订单请求（Create/Cancel/Amend）。
     /// 注意：这不代表订单已成交，只代表请求合法且已进入撮合引擎。
     RequestAccepted {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         id: OrderId,
         client_id: Option<ClientOrderId>,
     },
@@ -451,7 +451,7 @@ pub enum OrderUpdate<I> {
     /// 交易所拒绝了订单请求。
     /// 可能原因：参数错误、余额不足、风控限制等。
     RequestRejected {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         id: Option<OrderId>,
         client_id: Option<ClientOrderId>,
         reason: String,
@@ -462,19 +462,19 @@ pub enum OrderUpdate<I> {
     /// 新订单确认
     ///
     /// 订单已成功挂在订单簿上。
-    OrderNew(Order),
+    OrderNew(Order<A, S>),
 
     /// 订单成交
     ///
     /// 订单的部分或全部数量已成交。
     /// 包含成交价格、数量等详细信息。
-    OrderFilled(Order),
+    OrderFilled(Order<A, S>),
 
     /// 订单已取消
     ///
     /// 订单已被成功撤销。
     OrderCanceled {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         id: OrderId,
         instrument: I,
     },
@@ -483,7 +483,7 @@ pub enum OrderUpdate<I> {
     ///
     /// 订单在进入撮合引擎后被拒绝（例如 PostOnly 订单立即成交）。
     OrderRejected {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         id: Option<OrderId>,
         reason: String,
     },
@@ -492,7 +492,7 @@ pub enum OrderUpdate<I> {
     ///
     /// 订单因时间限制（如 FOK, IOC, GTC）而过期取消。
     OrderExpired {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         id: OrderId,
         instrument: I,
     },
@@ -502,7 +502,7 @@ pub enum OrderUpdate<I> {
     /// 订单快照
     ///
     /// 查询操作返回的当前挂单列表快照。
-    OrderSnapshot(Vec<Order>),
+    OrderSnapshot(Vec<Order<A, S>>),
 
     // --- Error ---
 
@@ -514,35 +514,35 @@ pub enum OrderUpdate<I> {
 
 /// 持仓控制指令集
 #[derive(Debug, Clone)]
-pub enum PositionCommand<I> {
+pub enum PositionCommand<I, S: SubAccountIdentity> {
     /// 订阅持仓更新
     ///
     /// 请求 Connector 推送持仓变化数据。
     Subscribe {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
     },
 
     /// 查询持仓
     ///
     /// 请求立即返回当前的持仓状态。
     Query {
-        sub_account_id: SubAccountId,
+        sub_account_id: S,
         instrument: Option<I>,
     },
 }
 
 /// 持仓状态更新
 #[derive(Debug, Clone)]
-pub enum PositionUpdate {
+pub enum PositionUpdate<A: AssetIdentity, S: SubAccountIdentity> {
     /// 持仓快照
     ///
     /// 通常在订阅成功后或查询响应时返回全量持仓数据。
-    Snapshot(Vec<Position>),
+    Snapshot(Vec<Position<A, S>>),
 
     /// 持仓变更
     ///
     /// 单个持仓发生变化的增量更新。
-    Update(Position),
+    Update(Position<A, S>),
 
     /// 错误信息
     Error(String),
@@ -552,26 +552,26 @@ pub enum PositionUpdate {
 
 /// 资金/余额控制指令集
 #[derive(Debug, Clone)]
-pub enum BalanceCommand {
+pub enum BalanceCommand<S: SubAccountIdentity> {
     /// 订阅余额更新
-    Subscribe { sub_account_id: SubAccountId },
+    Subscribe { sub_account_id: S },
 
     /// 查询余额
-    Query { sub_account_id: SubAccountId },
+    Query { sub_account_id: S },
 }
 
 /// 资金/余额状态更新
 #[derive(Debug, Clone)]
-pub enum BalanceUpdate {
+pub enum BalanceUpdate<A: AssetIdentity, S: SubAccountIdentity> {
     /// 余额快照
     ///
     /// 返回账户下所有资产的余额快照。
-    Snapshot(Vec<Balance>),
+    Snapshot(Vec<Balance<A, S>>),
 
     /// 余额变更
     ///
     /// 单个资产余额发生变化的增量更新。
-    Update(Balance),
+    Update(Balance<A, S>),
 
     /// 错误信息
     Error(String),
