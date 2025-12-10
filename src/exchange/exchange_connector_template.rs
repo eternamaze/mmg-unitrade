@@ -86,6 +86,27 @@ pub trait ConnectorImpl: Send + Sync + 'static {
         req: OrderRequest,
     ) -> anyhow::Result<()>;
 
+    async fn on_fetch_open_orders(
+        &self,
+        sub_account_id: SubAccountId,
+        instrument: Option<Self::Instrument>,
+    ) -> anyhow::Result<()>;
+
+    async fn on_fetch_order(
+        &self,
+        sub_account_id: SubAccountId,
+        instrument: Self::Instrument,
+        order_id: OrderId,
+    ) -> anyhow::Result<()>;
+
+    async fn on_fetch_positions(
+        &self,
+        sub_account_id: SubAccountId,
+        instrument: Option<Self::Instrument>,
+    ) -> anyhow::Result<()>;
+
+    async fn on_fetch_balances(&self, sub_account_id: SubAccountId) -> anyhow::Result<()>;
+
     // Default implementations for optional features
     async fn on_batch_submit_order(
         &self,
@@ -312,6 +333,34 @@ where
                         implementation
                             .on_amend_order(sub_account_id, instrument, order_id, req)
                             .await
+                    }
+                    ConnectorRequest::FetchOpenOrders {
+                        sub_account_id,
+                        instrument,
+                    } => {
+                        implementation
+                            .on_fetch_open_orders(sub_account_id, instrument)
+                            .await
+                    }
+                    ConnectorRequest::FetchOrder {
+                        sub_account_id,
+                        instrument,
+                        order_id,
+                    } => {
+                        implementation
+                            .on_fetch_order(sub_account_id, instrument, order_id)
+                            .await
+                    }
+                    ConnectorRequest::FetchPositions {
+                        sub_account_id,
+                        instrument,
+                    } => {
+                        implementation
+                            .on_fetch_positions(sub_account_id, instrument)
+                            .await
+                    }
+                    ConnectorRequest::FetchBalances { sub_account_id } => {
+                        implementation.on_fetch_balances(sub_account_id).await
                     }
                     // ... handle other requests
                     _ => Ok(()), // TODO: Implement others
