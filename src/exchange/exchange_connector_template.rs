@@ -4,8 +4,9 @@ use crate::dataform::kline::KlineSeries;
 use crate::dataform::orderbook::OrderBook;
 use crate::dataform::tradeflow::TradeFlow;
 use crate::exchange::exchange_domain::{
-    BalanceUpdate, ChannelType, ConnectorRequest, NetworkCommand, NetworkControlDomain,
-    NetworkStatus, NetworkStatusDomain, OrderUpdate, PositionUpdate,
+    BalanceDomain, BalanceUpdate, ChannelType, ConnectorControlDomain, ConnectorRequest,
+    KlineDomain, NetworkCommand, NetworkControlDomain, NetworkStatus, NetworkStatusDomain,
+    OrderBookDomain, OrderDomain, OrderUpdate, PositionDomain, PositionUpdate, TradeFlowDomain,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -22,7 +23,7 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 /// 它不处理具体的业务逻辑，只负责数据的收发和连接的维护。
 /// 它是交易所三元组中的“网络层”。
 ///
-/// Connector 必须是一个 Actor，并且暴露一个“挂钩” (Hook) 供 Feed 和 Gateway 使用。
+/// Connector 必须是一个 Actor。
 /// 同时，它必须实现标准的网络控制和状态协议，允许系统监控和干预网络层。
 #[async_trait]
 pub trait ExchangeConnector:
@@ -33,18 +34,8 @@ pub trait ExchangeConnector:
     /// 连接器的配置/实现类型，用于构建连接器实例。
     type Config: Send + Sync + 'static;
 
-    /// 连接器暴露给内部组件 (Feed/Gateway) 的挂钩。
-    /// 这是一个句柄，用于让组件挂载到连接器上。
-    /// 具体的挂钩类型由实现者定义（例如包含特定 SDK 的 Sender）。
-    ///
-    /// 强烈建议 Hook 内部持有一个发送端，用于发送 `ConnectorRequest`。
-    type Hook: Clone + Send + Sync + 'static;
-
     /// 使用配置构建连接器实例
     fn new(config: Self::Config) -> Self;
-
-    /// 创建一个挂钩实例，供 Feed 和 Gateway 使用。
-    fn create_hook(&self) -> Self::Hook;
 }
 
 // --- Standard Implementation Framework ---
@@ -183,15 +174,6 @@ where
     }
 }
 
-/// 标准连接器挂钩
-///
-/// 这是 `StandardConnector` 暴露给 Feed 和 Gateway 的句柄。
-#[derive(Clone)]
-pub struct StandardHook<I> {
-    pub request_tx: mpsc::Sender<ConnectorRequest<I>>,
-    pub channels: ConnectorChannels<I>,
-}
-
 /// 标准连接器模板
 ///
 /// 这是一个泛型结构体，实现了 `ExchangeConnector`。
@@ -204,9 +186,10 @@ pub struct StandardConnector<I, Impl> {
     network_tx: mpsc::Sender<NetworkCommand>,
     network_rx: Arc<Mutex<Option<mpsc::Receiver<NetworkCommand>>>>,
 
+    request_tx: mpsc::Sender<ConnectorRequest<I>>,
     request_rx: Arc<Mutex<Option<mpsc::Receiver<ConnectorRequest<I>>>>>,
 
-    hook: StandardHook<I>,
+    channels: ConnectorChannels<I>,
 }
 
 impl<I, Impl> StandardConnector<I, Impl>
@@ -232,17 +215,13 @@ where
             status_tx,
         };
 
-        let hook = StandardHook {
-            request_tx: request_tx.clone(),
-            channels: channels.clone(),
-        };
-
         Self {
             implementation: Arc::new(implementation),
             network_tx,
             network_rx: Arc::new(Mutex::new(Some(network_rx))),
+            request_tx,
             request_rx: Arc::new(Mutex::new(Some(request_rx))),
-            hook,
+            channels,
         }
     }
 }
@@ -268,7 +247,7 @@ where
             .ok_or(anyhow::anyhow!("Network RX already taken"))?;
 
         let implementation = self.implementation.clone();
-        let channels = self.hook.channels.clone();
+        let channels = self.channels.clone();
 
         // Start the implementation (e.g., connect WS)
         implementation.start(channels).await?;
@@ -390,7 +369,161 @@ where
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
         Ok(ChannelPair {
             tx: None,
-            rx: Some(self.hook.channels.status_tx.subscribe()),
+            rx: Some(self.channels.status_tx.subscribe()),
+        })
+    }
+}
+
+// --- Data Channels ---
+
+impl<I, Impl> AccessChannel<OrderBookDomain> for StandardConnector<I, Impl>
+where
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    Impl: ConnectorImpl<Instrument = I>,
+{
+    type Id = I;
+    type Sender = ();
+    type Receiver = broadcast::Receiver<OrderBook>;
+
+    fn access_channel(
+        &self,
+        _domain: OrderBookDomain,
+        id: Self::Id,
+    ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
+        let tx = self.channels.get_orderbook_tx(&id);
+        Ok(ChannelPair {
+            tx: None,
+            rx: Some(tx.subscribe()),
+        })
+    }
+}
+
+impl<I, Impl> AccessChannel<TradeFlowDomain> for StandardConnector<I, Impl>
+where
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    Impl: ConnectorImpl<Instrument = I>,
+{
+    type Id = I;
+    type Sender = ();
+    type Receiver = broadcast::Receiver<TradeFlow>;
+
+    fn access_channel(
+        &self,
+        _domain: TradeFlowDomain,
+        id: Self::Id,
+    ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
+        let tx = self.channels.get_trade_tx(&id);
+        Ok(ChannelPair {
+            tx: None,
+            rx: Some(tx.subscribe()),
+        })
+    }
+}
+
+impl<I, Impl> AccessChannel<KlineDomain> for StandardConnector<I, Impl>
+where
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    Impl: ConnectorImpl<Instrument = I>,
+{
+    type Id = I;
+    type Sender = ();
+    type Receiver = broadcast::Receiver<KlineSeries>;
+
+    fn access_channel(
+        &self,
+        _domain: KlineDomain,
+        id: Self::Id,
+    ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
+        let tx = self.channels.get_kline_tx(&id);
+        Ok(ChannelPair {
+            tx: None,
+            rx: Some(tx.subscribe()),
+        })
+    }
+}
+
+// --- Execution Channels ---
+
+impl<I, Impl> AccessChannel<ConnectorControlDomain> for StandardConnector<I, Impl>
+where
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    Impl: ConnectorImpl<Instrument = I>,
+{
+    type Id = ();
+    type Sender = mpsc::Sender<ConnectorRequest<I>>;
+    type Receiver = ();
+
+    fn access_channel(
+        &self,
+        _domain: ConnectorControlDomain,
+        _id: Self::Id,
+    ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
+        Ok(ChannelPair {
+            tx: Some(self.request_tx.clone()),
+            rx: None,
+        })
+    }
+}
+
+impl<I, Impl> AccessChannel<OrderDomain> for StandardConnector<I, Impl>
+where
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    Impl: ConnectorImpl<Instrument = I>,
+{
+    type Id = ();
+    type Sender = ();
+    type Receiver = broadcast::Receiver<OrderUpdate<I>>;
+
+    fn access_channel(
+        &self,
+        _domain: OrderDomain,
+        _id: Self::Id,
+    ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
+        Ok(ChannelPair {
+            tx: None,
+            rx: Some(self.channels.order_update_tx.subscribe()),
+        })
+    }
+}
+
+impl<I, Impl> AccessChannel<PositionDomain> for StandardConnector<I, Impl>
+where
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    Impl: ConnectorImpl<Instrument = I>,
+{
+    type Id = ();
+    type Sender = ();
+    type Receiver = broadcast::Receiver<PositionUpdate>;
+
+    fn access_channel(
+        &self,
+        _domain: PositionDomain,
+        _id: Self::Id,
+    ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
+        Ok(ChannelPair {
+            tx: None,
+            rx: Some(self.channels.position_update_tx.subscribe()),
+        })
+    }
+}
+
+impl<I, Impl> AccessChannel<BalanceDomain> for StandardConnector<I, Impl>
+where
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
+    Impl: ConnectorImpl<Instrument = I>,
+{
+    type Id = ();
+    type Sender = ();
+    type Receiver = broadcast::Receiver<BalanceUpdate>;
+
+    fn access_channel(
+        &self,
+        _domain: BalanceDomain,
+        _id: Self::Id,
+    ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
+        Ok(ChannelPair {
+            tx: None,
+            rx: Some(self.channels.balance_update_tx.subscribe()),
         })
     }
 }
@@ -401,13 +534,8 @@ where
     Impl: ConnectorImpl<Instrument = I>,
 {
     type Config = Impl;
-    type Hook = StandardHook<I>;
 
     fn new(config: Self::Config) -> Self {
         Self::new(config)
-    }
-
-    fn create_hook(&self) -> Self::Hook {
-        self.hook.clone()
     }
 }

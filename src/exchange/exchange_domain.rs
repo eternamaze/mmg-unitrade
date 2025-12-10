@@ -12,40 +12,54 @@ pub trait DomainTag: Send + Sync + 'static {}
 // --- Market Data Domains (Feed) ---
 
 /// 订单簿域 (L2/L3)
+#[derive(Debug, Clone, Copy)]
 pub struct OrderBookDomain;
 impl DomainTag for OrderBookDomain {}
 
 /// 成交流域 (Trade Flow / Ticker)
+#[derive(Debug, Clone, Copy)]
 pub struct TradeFlowDomain;
 impl DomainTag for TradeFlowDomain {}
 
 /// K线域 (Candlestick / OHLCV)
+#[derive(Debug, Clone, Copy)]
 pub struct KlineDomain;
 impl DomainTag for KlineDomain {}
 
 // --- Trading Domains (Gateway) ---
 
 /// 订单管理域 (Order Management)
+#[derive(Debug, Clone, Copy)]
 pub struct OrderDomain;
 impl DomainTag for OrderDomain {}
 
 /// 持仓管理域 (Position Management)
+#[derive(Debug, Clone, Copy)]
 pub struct PositionDomain;
 impl DomainTag for PositionDomain {}
 
 /// 资产余额域 (Balance / Asset)
+#[derive(Debug, Clone, Copy)]
 pub struct BalanceDomain;
 impl DomainTag for BalanceDomain {}
 
 // --- Network Domains (Connector) ---
 
 /// 网络控制域 (Network Control)
+#[derive(Debug, Clone, Copy)]
 pub struct NetworkControlDomain;
 impl DomainTag for NetworkControlDomain {}
 
 /// 网络状态域 (Network Status)
+#[derive(Debug, Clone, Copy)]
 pub struct NetworkStatusDomain;
 impl DomainTag for NetworkStatusDomain {}
+
+/// 连接器控制域 (Connector Control)
+/// 用于向连接器发送通用请求 (订阅、下单等)
+#[derive(Debug, Clone, Copy)]
+pub struct ConnectorControlDomain;
+impl DomainTag for ConnectorControlDomain {}
 
 // ================================================================================================
 // Domain Specific Languages (DSL)

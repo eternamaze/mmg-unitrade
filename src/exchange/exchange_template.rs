@@ -5,14 +5,15 @@ use crate::dataform::orderbook::OrderBook;
 use crate::dataform::tradeflow::TradeFlow;
 use crate::exchange::exchange_connector_template::ExchangeConnector;
 use crate::exchange::exchange_domain::{
-    BalanceCommand, BalanceDomain, BalanceUpdate, FeedCommand, KlineDomain, OrderBookDomain,
-    OrderCommand, OrderDomain, OrderUpdate, PositionCommand, PositionDomain, PositionUpdate,
-    TradeFlowDomain,
+    BalanceCommand, BalanceDomain, BalanceUpdate, ConnectorControlDomain, ConnectorRequest,
+    FeedCommand, KlineDomain, OrderBookDomain, OrderCommand, OrderDomain, OrderUpdate,
+    PositionCommand, PositionDomain, PositionUpdate, TradeFlowDomain,
 };
 use crate::exchange::exchange_feed_template::ExchangeFeed;
 use crate::exchange::exchange_gateway_template::ExchangeGateway;
 use async_trait::async_trait;
 use std::marker::PhantomData;
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
 
 /// 交易所三元组 (Exchange Triad)
@@ -28,7 +29,7 @@ use tokio::sync::{broadcast, mpsc};
 pub struct Exchange<C, F, G, I> {
     /// 连接器是内部基础设施，不对外暴露。
     /// 外部只能通过 Feed 和 Gateway 与系统交互。
-    connector: Option<C>,
+    connector: Option<Arc<C>>,
     feed: Option<F>,
     gateway: Option<G>,
     _marker: PhantomData<I>,
@@ -36,12 +37,48 @@ pub struct Exchange<C, F, G, I> {
 
 impl<C, F, G, I> Exchange<C, F, G, I>
 where
-    C: ExchangeConnector,
+    C: ExchangeConnector
+        + AccessChannel<
+            ConnectorControlDomain,
+            Id = (),
+            Sender = mpsc::Sender<ConnectorRequest<I>>,
+            Receiver = (),
+        > + AccessChannel<OrderBookDomain, Id = I, Receiver = broadcast::Receiver<OrderBook>>
+        + AccessChannel<TradeFlowDomain, Id = I, Receiver = broadcast::Receiver<TradeFlow>>
+        + AccessChannel<KlineDomain, Id = I, Receiver = broadcast::Receiver<KlineSeries>>
+        + AccessChannel<OrderDomain, Id = (), Receiver = broadcast::Receiver<OrderUpdate<I>>>
+        + AccessChannel<PositionDomain, Id = (), Receiver = broadcast::Receiver<PositionUpdate>>
+        + AccessChannel<BalanceDomain, Id = (), Receiver = broadcast::Receiver<BalanceUpdate>>,
     F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway,
-    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
+    G: ExchangeGateway<Id = I>,
+    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
 {
     pub fn new(connector: C, feed: F, gateway: G) -> Self {
+        Self {
+            connector: Some(Arc::new(connector)),
+            feed: Some(feed),
+            gateway: Some(gateway),
+            _marker: PhantomData,
+        }
+    }
+
+    /// 自动构建并连线
+    ///
+    /// 这是推荐的构建方式。它会自动创建 Connector，并将其注入到 Feed 和 Gateway 中。
+    pub fn build(config: C::Config) -> Self {
+        let connector = Arc::new(C::new(config));
+        
+        // 获取连接器控制信道
+        let connector_tx = connector
+            .access_channel(ConnectorControlDomain, ())
+            .expect("Failed to access connector control channel")
+            .tx
+            .expect("Connector control channel TX is missing");
+
+        // 注入信道而非 Connector 本体
+        let feed = F::new(connector_tx.clone());
+        let gateway = G::new(connector_tx);
+
         Self {
             connector: Some(connector),
             feed: Some(feed),
@@ -91,14 +128,8 @@ where
 
 impl<C, F, G, I> AccessChannel<OrderBookDomain> for Exchange<C, F, G, I>
 where
-    C: ExchangeConnector,
-    F: ExchangeFeed<Id = I>,
-    F: AccessChannel<
-            OrderBookDomain,
-            Id = I,
-            Sender = mpsc::Sender<FeedCommand<I>>,
-            Receiver = broadcast::Receiver<OrderBook>,
-        >,
+    C: ExchangeConnector + AccessChannel<OrderBookDomain, Id = I, Receiver = broadcast::Receiver<OrderBook>>,
+    F: ExchangeFeed<Id = I> + AccessChannel<OrderBookDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
     G: ExchangeGateway,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
 {
@@ -111,23 +142,22 @@ where
         domain: OrderBookDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        match &self.feed {
-            Some(feed) => feed.access_channel(domain, id),
-            None => Ok(ChannelPair::default()),
-        }
+        let tx = match &self.feed {
+            Some(feed) => feed.access_channel(domain, id.clone())?.tx,
+            None => None,
+        };
+        let rx = match &self.connector {
+            Some(connector) => connector.access_channel(domain, id)?.rx,
+            None => None,
+        };
+        Ok(ChannelPair { tx, rx })
     }
 }
 
 impl<C, F, G, I> AccessChannel<TradeFlowDomain> for Exchange<C, F, G, I>
 where
-    C: ExchangeConnector,
-    F: ExchangeFeed<Id = I>,
-    F: AccessChannel<
-            TradeFlowDomain,
-            Id = I,
-            Sender = mpsc::Sender<FeedCommand<I>>,
-            Receiver = broadcast::Receiver<TradeFlow>,
-        >,
+    C: ExchangeConnector + AccessChannel<TradeFlowDomain, Id = I, Receiver = broadcast::Receiver<TradeFlow>>,
+    F: ExchangeFeed<Id = I> + AccessChannel<TradeFlowDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
     G: ExchangeGateway,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
 {
@@ -140,23 +170,22 @@ where
         domain: TradeFlowDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        match &self.feed {
-            Some(feed) => feed.access_channel(domain, id),
-            None => Ok(ChannelPair::default()),
-        }
+        let tx = match &self.feed {
+            Some(feed) => feed.access_channel(domain, id.clone())?.tx,
+            None => None,
+        };
+        let rx = match &self.connector {
+            Some(connector) => connector.access_channel(domain, id)?.rx,
+            None => None,
+        };
+        Ok(ChannelPair { tx, rx })
     }
 }
 
 impl<C, F, G, I> AccessChannel<KlineDomain> for Exchange<C, F, G, I>
 where
-    C: ExchangeConnector,
-    F: ExchangeFeed<Id = I>,
-    F: AccessChannel<
-            KlineDomain,
-            Id = I,
-            Sender = mpsc::Sender<FeedCommand<I>>,
-            Receiver = broadcast::Receiver<KlineSeries>,
-        >,
+    C: ExchangeConnector + AccessChannel<KlineDomain, Id = I, Receiver = broadcast::Receiver<KlineSeries>>,
+    F: ExchangeFeed<Id = I> + AccessChannel<KlineDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
     G: ExchangeGateway,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
 {
@@ -169,61 +198,27 @@ where
         domain: KlineDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        match &self.feed {
-            Some(feed) => feed.access_channel(domain, id),
-            None => Ok(ChannelPair::default()),
-        }
+        let tx = match &self.feed {
+            Some(feed) => feed.access_channel(domain, id.clone())?.tx,
+            None => None,
+        };
+        let rx = match &self.connector {
+            Some(connector) => connector.access_channel(domain, id)?.rx,
+            None => None,
+        };
+        Ok(ChannelPair { tx, rx })
     }
 }
 
-/// 交易所三元组 (Exchange Triad)
-///
-/// 这是一个泛型结构体，用于组合 Connector, Feed, Gateway。
-/// 它本身也是一个 Actor，负责管理这三个组件的生命周期。
-/// 它是外部交互的唯一入口（Facade）。
-///
-/// 外部使用者通过 Exchange 获取所有业务域的信道，
-/// Exchange 内部会将请求转发给 Feed 或 Gateway。
-impl<C, F, G, I> Exchange<C, F, G, I>
-where
-    C: ExchangeConnector,
-    F: ExchangeFeed<Id = I, ConnectorHook = C::Hook>,
-    G: ExchangeGateway<ConnectorHook = C::Hook>,
-    I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
-{
-    /// 构造函数：强制使用 Connector 创建 Feed 和 Gateway
-    ///
-    /// 这是一个“工厂方法”，它封装了组件的创建过程。
-    /// 外部用户只需要提供 Connector 的配置（或实现策略），Exchange 会自动创建 Connector，并组装 Feed 和 Gateway。
-    /// 这确保了 Feed 和 Gateway 必须复用同一个 Connector 的挂钩 (Hook)。
-    pub fn build(config: C::Config) -> Self {
-        let connector = C::new(config);
-        let hook = connector.create_hook();
-        let feed = Some(F::new(hook.clone()));
-        let gateway = Some(G::new(hook));
 
-        Self {
-            connector: Some(connector),
-            feed,
-            gateway,
-            _marker: PhantomData,
-        }
-    }
-}
 
 // --- Gateway Channel Forwarding ---
 
 impl<C, F, G, I> AccessChannel<OrderDomain> for Exchange<C, F, G, I>
 where
-    C: ExchangeConnector,
+    C: ExchangeConnector + AccessChannel<OrderDomain, Id = (), Receiver = broadcast::Receiver<OrderUpdate<I>>>,
     F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway<Id = I>,
-    G: AccessChannel<
-            OrderDomain,
-            Id = SubAccountId,
-            Sender = mpsc::Sender<OrderCommand<I>>,
-            Receiver = broadcast::Receiver<OrderUpdate<I>>,
-        >,
+    G: ExchangeGateway<Id = I> + AccessChannel<OrderDomain, Id = SubAccountId, Sender = mpsc::Sender<OrderCommand<I>>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
 {
     type Id = SubAccountId;
@@ -235,24 +230,23 @@ where
         domain: OrderDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        match &self.gateway {
-            Some(gateway) => gateway.access_channel(domain, id),
-            None => Ok(ChannelPair::default()),
-        }
+        let tx = match &self.gateway {
+            Some(gateway) => gateway.access_channel(domain, id)?.tx,
+            None => None,
+        };
+        let rx = match &self.connector {
+            Some(connector) => connector.access_channel(domain, ())?.rx,
+            None => None,
+        };
+        Ok(ChannelPair { tx, rx })
     }
 }
 
 impl<C, F, G, I> AccessChannel<PositionDomain> for Exchange<C, F, G, I>
 where
-    C: ExchangeConnector,
+    C: ExchangeConnector + AccessChannel<PositionDomain, Id = (), Receiver = broadcast::Receiver<PositionUpdate>>,
     F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway<Id = I>,
-    G: AccessChannel<
-            PositionDomain,
-            Id = SubAccountId,
-            Sender = mpsc::Sender<PositionCommand<I>>,
-            Receiver = broadcast::Receiver<PositionUpdate>,
-        >,
+    G: ExchangeGateway<Id = I> + AccessChannel<PositionDomain, Id = SubAccountId, Sender = mpsc::Sender<PositionCommand<I>>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
 {
     type Id = SubAccountId;
@@ -264,24 +258,23 @@ where
         domain: PositionDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        match &self.gateway {
-            Some(gateway) => gateway.access_channel(domain, id),
-            None => Ok(ChannelPair::default()),
-        }
+        let tx = match &self.gateway {
+            Some(gateway) => gateway.access_channel(domain, id)?.tx,
+            None => None,
+        };
+        let rx = match &self.connector {
+            Some(connector) => connector.access_channel(domain, ())?.rx,
+            None => None,
+        };
+        Ok(ChannelPair { tx, rx })
     }
 }
 
 impl<C, F, G, I> AccessChannel<BalanceDomain> for Exchange<C, F, G, I>
 where
-    C: ExchangeConnector,
+    C: ExchangeConnector + AccessChannel<BalanceDomain, Id = (), Receiver = broadcast::Receiver<BalanceUpdate>>,
     F: ExchangeFeed<Id = I>,
-    G: ExchangeGateway<Id = I>,
-    G: AccessChannel<
-            BalanceDomain,
-            Id = SubAccountId,
-            Sender = mpsc::Sender<BalanceCommand>,
-            Receiver = broadcast::Receiver<BalanceUpdate>,
-        >,
+    G: ExchangeGateway<Id = I> + AccessChannel<BalanceDomain, Id = SubAccountId, Sender = mpsc::Sender<BalanceCommand>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
 {
     type Id = SubAccountId;
@@ -293,9 +286,14 @@ where
         domain: BalanceDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        match &self.gateway {
-            Some(gateway) => gateway.access_channel(domain, id),
-            None => Ok(ChannelPair::default()),
-        }
+        let tx = match &self.gateway {
+            Some(gateway) => gateway.access_channel(domain, id)?.tx,
+            None => None,
+        };
+        let rx = match &self.connector {
+            Some(connector) => connector.access_channel(domain, ())?.rx,
+            None => None,
+        };
+        Ok(ChannelPair { tx, rx })
     }
 }

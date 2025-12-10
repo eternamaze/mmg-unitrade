@@ -1,9 +1,8 @@
 use crate::common::account_model::{SubAccountId};
 use crate::common::actor_trait::{AccessChannel, Actor, ChannelPair};
-use crate::exchange::exchange_connector_template::{StandardHook};
 use crate::exchange::exchange_domain::{
-    BalanceCommand, BalanceDomain, BalanceUpdate, ConnectorRequest, OrderCommand, OrderDomain,
-    OrderUpdate, PositionCommand, PositionDomain, PositionUpdate,
+    BalanceCommand, BalanceDomain, BalanceUpdate, ConnectorRequest,
+    OrderCommand, OrderDomain, OrderUpdate, PositionCommand, PositionDomain, PositionUpdate,
 };
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -19,11 +18,9 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 /// 它是交易所三元组中的“执行层”。
 pub trait ExchangeGateway: Actor {
     type Id: Send + Sync + 'static + Clone + std::hash::Hash + Eq;
-    /// 连接器提供的挂钩 (Hook)
-    type ConnectorHook: Clone + Send + Sync + 'static;
 
-    /// 使用连接器提供的挂钩创建 Gateway 实例
-    fn new(hook: Self::ConnectorHook) -> Self;
+    /// 使用连接器信道创建 Gateway 实例
+    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id>>) -> Self;
 }
 
 // --- Standard Implementation ---
@@ -33,7 +30,7 @@ pub trait ExchangeGateway: Actor {
 /// 这是一个泛型结构体，实现了 `ExchangeGateway`。
 /// 它自动处理订单路由和账户状态查询。
 pub struct StandardGateway<I> {
-    hook: StandardHook<I>,
+    connector_tx: mpsc::Sender<ConnectorRequest<I>>,
 
     order_tx: mpsc::Sender<OrderCommand<I>>,
     order_rx: Arc<Mutex<Option<mpsc::Receiver<OrderCommand<I>>>>>,
@@ -49,13 +46,13 @@ impl<I> StandardGateway<I>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
 {
-    pub fn new(hook: StandardHook<I>) -> Self {
+    pub fn new(connector_tx: mpsc::Sender<ConnectorRequest<I>>) -> Self {
         let (order_tx, order_rx) = mpsc::channel(100);
         let (position_tx, position_rx) = mpsc::channel(100);
         let (balance_tx, balance_rx) = mpsc::channel(100);
 
         Self {
-            hook,
+            connector_tx,
             order_tx,
             order_rx: Arc::new(Mutex::new(Some(order_rx))),
             position_tx,
@@ -71,10 +68,9 @@ where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
 {
     type Id = I;
-    type ConnectorHook = StandardHook<I>;
 
-    fn new(hook: Self::ConnectorHook) -> Self {
-        Self::new(hook)
+    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id>>) -> Self {
+        Self::new(connector_tx)
     }
 }
 
@@ -103,7 +99,7 @@ where
             .take()
             .ok_or(anyhow::anyhow!("Balance RX already taken"))?;
 
-        let request_tx = self.hook.request_tx.clone();
+        let request_tx = self.connector_tx.clone();
 
         // Order Loop
         let request_tx_clone = request_tx.clone();
@@ -279,7 +275,7 @@ where
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
         Ok(ChannelPair {
             tx: Some(self.order_tx.clone()),
-            rx: Some(self.hook.channels.order_update_tx.subscribe()),
+            rx: None,
         })
     }
 }
@@ -299,7 +295,7 @@ where
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
         Ok(ChannelPair {
             tx: Some(self.position_tx.clone()),
-            rx: Some(self.hook.channels.position_update_tx.subscribe()),
+            rx: None,
         })
     }
 }
@@ -319,7 +315,7 @@ where
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
         Ok(ChannelPair {
             tx: Some(self.balance_tx.clone()),
-            rx: Some(self.hook.channels.balance_update_tx.subscribe()),
+            rx: None,
         })
     }
 }

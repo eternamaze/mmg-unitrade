@@ -2,7 +2,6 @@ use crate::common::actor_trait::{AccessChannel, Actor, ChannelPair};
 use crate::dataform::kline::KlineSeries;
 use crate::dataform::orderbook::OrderBook;
 use crate::dataform::tradeflow::TradeFlow;
-use crate::exchange::exchange_connector_template::{StandardHook};
 use crate::exchange::exchange_domain::{
     ConnectorRequest, FeedCommand, KlineDomain, OrderBookDomain, TradeFlowDomain,
 };
@@ -23,11 +22,12 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 /// 使用关联类型 Id 来支持不同的市场寻址方式（如 TradingPair 或 Instrument）。
 pub trait ExchangeFeed: Actor {
     type Id: Send + Sync + 'static + Clone + std::hash::Hash + Eq;
-    /// 连接器提供的挂钩 (Hook)
-    type ConnectorHook: Clone + Send + Sync + 'static;
 
-    /// 使用连接器提供的挂钩创建 Feed 实例
-    fn new(hook: Self::ConnectorHook) -> Self;
+    /// 使用连接器信道创建 Feed 实例
+    ///
+    /// Feed 不再持有 Connector 的引用，而是直接持有与 Connector 通信的信道。
+    /// 这遵循了 Actor 模型“只共享信道，不共享本体”的原则。
+    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id>>) -> Self;
 }
 
 // --- Standard Implementation ---
@@ -36,9 +36,9 @@ pub trait ExchangeFeed: Actor {
 ///
 /// 这是一个泛型结构体，实现了 `ExchangeFeed`。
 /// 它自动处理订阅逻辑，并将数据通道暴露给外部。
-/// 它依赖于 `StandardHook` 来与连接器交互。
+/// 它不再依赖 `Connector` 本体，而是依赖 `connector_tx`。
 pub struct StandardFeed<I> {
-    hook: StandardHook<I>,
+    connector_tx: mpsc::Sender<ConnectorRequest<I>>,
     command_tx: mpsc::Sender<FeedCommand<I>>,
     command_rx: Arc<Mutex<Option<mpsc::Receiver<FeedCommand<I>>>>>,
 }
@@ -47,10 +47,10 @@ impl<I> StandardFeed<I>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
 {
-    pub fn new(hook: StandardHook<I>) -> Self {
+    pub fn new(connector_tx: mpsc::Sender<ConnectorRequest<I>>) -> Self {
         let (command_tx, command_rx) = mpsc::channel(100);
         Self {
-            hook,
+            connector_tx,
             command_tx,
             command_rx: Arc::new(Mutex::new(Some(command_rx))),
         }
@@ -62,10 +62,9 @@ where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
 {
     type Id = I;
-    type ConnectorHook = StandardHook<I>;
 
-    fn new(hook: Self::ConnectorHook) -> Self {
-        Self::new(hook)
+    fn new(connector_tx: mpsc::Sender<ConnectorRequest<Self::Id>>) -> Self {
+        Self::new(connector_tx)
     }
 }
 
@@ -81,7 +80,8 @@ where
             .await
             .take()
             .ok_or(anyhow::anyhow!("Command RX already taken"))?;
-        let request_tx = self.hook.request_tx.clone();
+        
+        let request_tx = self.connector_tx.clone();
 
         tokio::spawn(async move {
             while let Some(cmd) = command_rx.recv().await {
@@ -135,12 +135,12 @@ where
     fn access_channel(
         &self,
         _domain: OrderBookDomain,
-        id: Self::Id,
+        _id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = self.hook.channels.get_orderbook_tx(&id);
+        // Feed 只提供控制信道 (Sender)，数据信道 (Receiver) 由 Exchange 从 Connector 获取并组合
         Ok(ChannelPair {
             tx: Some(self.command_tx.clone()),
-            rx: Some(tx.subscribe()),
+            rx: None,
         })
     }
 }
@@ -156,12 +156,11 @@ where
     fn access_channel(
         &self,
         _domain: TradeFlowDomain,
-        id: Self::Id,
+        _id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = self.hook.channels.get_trade_tx(&id);
         Ok(ChannelPair {
             tx: Some(self.command_tx.clone()),
-            rx: Some(tx.subscribe()),
+            rx: None,
         })
     }
 }
@@ -177,12 +176,11 @@ where
     fn access_channel(
         &self,
         _domain: KlineDomain,
-        id: Self::Id,
+        _id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = self.hook.channels.get_kline_tx(&id);
         Ok(ChannelPair {
             tx: Some(self.command_tx.clone()),
-            rx: Some(tx.subscribe()),
+            rx: None,
         })
     }
 }
