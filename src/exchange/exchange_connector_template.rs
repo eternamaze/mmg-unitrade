@@ -17,7 +17,10 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 
 // Moved to exchange_domain.rs
 
-/// 交易所连接器 (Connector)
+/// [API] 交易所连接器 (Connector)
+///
+/// **角色：框架标准接口 (Framework Standard Interface)**
+/// **使用者：框架用户 (Framework User)**
 ///
 /// 负责维护与交易所的网络连接（WebSocket/REST）。
 /// 它不处理具体的业务逻辑，只负责数据的收发和连接的维护。
@@ -26,7 +29,7 @@ use tokio::sync::{Mutex, broadcast, mpsc};
 /// Connector 必须是一个 Actor。
 /// 同时，它必须实现标准的网络控制和状态协议，允许系统监控和干预网络层。
 #[async_trait]
-pub trait ExchangeConnector:
+pub trait ExchangeConnector<I, A: AssetIdentity, S: SubAccountIdentity>:
     Actor
     + AccessChannel<NetworkControlDomain, Sender = mpsc::Sender<NetworkCommand>, Receiver = ()>
     + AccessChannel<NetworkStatusDomain, Sender = (), Receiver = broadcast::Receiver<NetworkStatus>>
@@ -36,11 +39,17 @@ pub trait ExchangeConnector:
 
     /// 使用配置构建连接器实例
     fn new(config: Self::Config) -> Self;
+
+    /// 获取连接器信道集合
+    fn channels(&self) -> ConnectorChannels<I, A, S>;
 }
 
 // --- Standard Implementation Framework ---
 
-/// 连接器实现 Trait
+/// [SPI] 连接器实现 Trait (Service Provider Interface)
+///
+/// **角色：服务提供者接口 (Service Provider Interface)**
+/// **使用者：交易所开发者 (Exchange Developer)**
 ///
 /// 开发者只需要实现这个 Trait，就可以自动获得一个完整的 ExchangeConnector。
 /// 这个 Trait 专注于业务逻辑（如何连接、如何订阅、如何发单），
@@ -54,6 +63,15 @@ pub trait ConnectorImpl: Send + Sync + 'static {
     /// 初始化并启动连接器
     /// 在这里建立 WebSocket 连接，并保存 channels 以便后续推送数据。
     async fn start(&self, channels: ConnectorChannels<Self::Instrument, Self::Asset, Self::SubAccount>) -> anyhow::Result<()>;
+
+    /// 钩子：执行重连逻辑
+    /// 框架在收到 Reconnect 指令时会调用此方法。
+    /// 实现者应在此处断开旧连接、建立新连接并恢复订阅。
+    async fn on_reconnect(&self) -> anyhow::Result<()>;
+
+    /// 钩子：执行断开连接逻辑
+    /// 框架在收到 Disconnect 指令时会调用此方法。
+    async fn on_disconnect(&self) -> anyhow::Result<()>;
 
     // --- Request Handlers ---
 
@@ -253,6 +271,10 @@ where
             channels,
         }
     }
+
+    pub fn channels(&self) -> ConnectorChannels<I, Impl::Asset, Impl::SubAccount> {
+        self.channels.clone()
+    }
 }
 
 #[async_trait]
@@ -281,18 +303,29 @@ where
         // Start the implementation (e.g., connect WS)
         implementation.start(channels).await?;
 
+        let implementation_for_network = implementation.clone();
+
         // Start network control loop
         tokio::spawn(async move {
+            let implementation = implementation_for_network;
             while let Some(cmd) = network_rx.recv().await {
                 match cmd {
                     NetworkCommand::Reconnect => {
-                        // TODO: Implement reconnect
+                        if let Err(e) = implementation.on_reconnect().await {
+                            eprintln!("Reconnect failed: {}", e);
+                        }
                     }
                     NetworkCommand::Disconnect => {
-                        // TODO: Implement disconnect
+                        if let Err(e) = implementation.on_disconnect().await {
+                            eprintln!("Disconnect failed: {}", e);
+                        }
                     }
                     NetworkCommand::CircuitBreak => {
-                        // TODO: Implement circuit break
+                        eprintln!("Circuit Breaker triggered! Disconnecting...");
+                        if let Err(e) = implementation.on_disconnect().await {
+                            eprintln!("Circuit break disconnect failed: {}", e);
+                        }
+                        // TODO: Consider adding a state flag to reject future requests
                     }
                 }
             }
@@ -302,11 +335,11 @@ where
         tokio::spawn(async move {
             while let Some(req) = request_rx.recv().await {
                 let res = match req {
-                    ConnectorRequest::Subscribe {
+                    ConnectorRequest::EstablishDataStream {
                         instrument,
                         channel_type,
                     } => implementation.on_subscribe(instrument, channel_type).await,
-                    ConnectorRequest::Unsubscribe {
+                    ConnectorRequest::StopDataStream {
                         instrument,
                         channel_type,
                     } => {
@@ -314,7 +347,7 @@ where
                             .on_unsubscribe(instrument, channel_type)
                             .await
                     }
-                    ConnectorRequest::SubmitOrder {
+                    ConnectorRequest::TransmitOrder {
                         sub_account_id,
                         instrument,
                         req,
@@ -323,7 +356,7 @@ where
                             .on_submit_order(sub_account_id, instrument, req)
                             .await
                     }
-                    ConnectorRequest::CancelOrder {
+                    ConnectorRequest::TransmitCancel {
                         sub_account_id,
                         instrument,
                         order_id,
@@ -332,7 +365,7 @@ where
                             .on_cancel_order(sub_account_id, instrument, order_id)
                             .await
                     }
-                    ConnectorRequest::AmendOrder {
+                    ConnectorRequest::TransmitAmend {
                         sub_account_id,
                         instrument,
                         order_id,
@@ -342,7 +375,7 @@ where
                             .on_amend_order(sub_account_id, instrument, order_id, req)
                             .await
                     }
-                    ConnectorRequest::FetchOpenOrders {
+                    ConnectorRequest::ExecuteFetchOpenOrders {
                         sub_account_id,
                         instrument,
                     } => {
@@ -350,7 +383,7 @@ where
                             .on_fetch_open_orders(sub_account_id, instrument)
                             .await
                     }
-                    ConnectorRequest::FetchOrder {
+                    ConnectorRequest::ExecuteFetchOrder {
                         sub_account_id,
                         instrument,
                         order_id,
@@ -359,7 +392,7 @@ where
                             .on_fetch_order(sub_account_id, instrument, order_id)
                             .await
                     }
-                    ConnectorRequest::FetchPositions {
+                    ConnectorRequest::ExecuteFetchPositions {
                         sub_account_id,
                         instrument,
                     } => {
@@ -367,11 +400,39 @@ where
                             .on_fetch_positions(sub_account_id, instrument)
                             .await
                     }
-                    ConnectorRequest::FetchBalances { sub_account_id } => {
+                    ConnectorRequest::ExecuteFetchBalances { sub_account_id } => {
                         implementation.on_fetch_balances(sub_account_id).await
                     }
-                    // ... handle other requests
-                    _ => Ok(()), // TODO: Implement others
+                    ConnectorRequest::TransmitBatchOrder {
+                        sub_account_id,
+                        instrument,
+                        reqs,
+                        atomic,
+                    } => {
+                        implementation
+                            .on_batch_submit_order(sub_account_id, instrument, reqs, atomic)
+                            .await
+                    }
+                    ConnectorRequest::TransmitBatchCancel {
+                        sub_account_id,
+                        instrument,
+                        order_ids,
+                        atomic,
+                    } => {
+                        implementation
+                            .on_batch_cancel_order(sub_account_id, instrument, order_ids, atomic)
+                            .await
+                    }
+                    ConnectorRequest::TransmitBatchAmend {
+                        sub_account_id,
+                        instrument,
+                        amends,
+                        atomic,
+                    } => {
+                        implementation
+                            .on_batch_amend_order(sub_account_id, instrument, amends, atomic)
+                            .await
+                    }
                 };
 
                 if let Err(e) = res {
@@ -384,7 +445,7 @@ where
     }
 
     async fn stop(&self) -> anyhow::Result<()> {
-        // TODO: Notify implementation to stop
+        self.implementation.on_disconnect().await?;
         Ok(())
     }
 }
@@ -585,7 +646,7 @@ where
     }
 }
 
-impl<I, Impl> ExchangeConnector for StandardConnector<I, Impl>
+impl<I, Impl> ExchangeConnector<I, Impl::Asset, Impl::SubAccount> for StandardConnector<I, Impl>
 where
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
     Impl: ConnectorImpl<Instrument = I>,
@@ -594,5 +655,9 @@ where
 
     fn new(config: Self::Config) -> Self {
         Self::new(config)
+    }
+
+    fn channels(&self) -> ConnectorChannels<I, Impl::Asset, Impl::SubAccount> {
+        self.channels.clone()
     }
 }

@@ -37,20 +37,15 @@ pub struct Exchange<C, F, G, I, A, S> {
 
 impl<C, F, G, I, A, S> Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector
+    C: ExchangeConnector<I, A, S>
         + AccessChannel<
             ConnectorControlDomain,
             Id = (),
             Sender = mpsc::Sender<ConnectorRequest<I, S>>,
             Receiver = (),
-        > + AccessChannel<OrderBookDomain, Id = I, Receiver = broadcast::Receiver<OrderBook<A>>>
-        + AccessChannel<TradeFlowDomain, Id = I, Receiver = broadcast::Receiver<TradeFlow<A>>>
-        + AccessChannel<KlineDomain, Id = I, Receiver = broadcast::Receiver<KlineSeries<A>>>
-        + AccessChannel<OrderDomain, Id = (), Receiver = broadcast::Receiver<OrderUpdate<I, A, S>>>
-        + AccessChannel<PositionDomain, Id = (), Receiver = broadcast::Receiver<PositionUpdate<A, S>>>
-        + AccessChannel<BalanceDomain, Id = (), Receiver = broadcast::Receiver<BalanceUpdate<A, S>>>,
-    F: ExchangeFeed<S, Id = I>,
-    G: ExchangeGateway<S, Id = I>,
+        >,
+    F: ExchangeFeed<A, S, Id = I>,
+    G: ExchangeGateway<A, S, Id = I>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq + std::fmt::Debug,
     A: AssetIdentity,
     S: SubAccountIdentity,
@@ -77,9 +72,11 @@ where
             .tx
             .expect("Connector control channel TX is missing");
 
+        let connector_channels = connector.channels();
+
         // 注入信道而非 Connector 本体
-        let feed = F::new(connector_tx.clone());
-        let gateway = G::new(connector_tx);
+        let feed = F::new(connector_tx.clone(), connector_channels.clone());
+        let gateway = G::new(connector_tx, connector_channels);
 
         Self {
             connector: Some(connector),
@@ -93,9 +90,9 @@ where
 #[async_trait]
 impl<C, F, G, I, A, S> Actor for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector,
-    F: ExchangeFeed<S, Id = I>,
-    G: ExchangeGateway<S>,
+    C: ExchangeConnector<I, A, S>,
+    F: ExchangeFeed<A, S, Id = I>,
+    G: ExchangeGateway<A, S>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
     A: AssetIdentity,
     S: SubAccountIdentity,
@@ -132,9 +129,9 @@ where
 
 impl<C, F, G, I, A, S> AccessChannel<OrderBookDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<OrderBookDomain, Id = I, Receiver = broadcast::Receiver<OrderBook<A>>>,
-    F: ExchangeFeed<S, Id = I> + AccessChannel<OrderBookDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
-    G: ExchangeGateway<S>,
+    C: ExchangeConnector<I, A, S>,
+    F: ExchangeFeed<A, S, Id = I> + AccessChannel<OrderBookDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>, Receiver = broadcast::Receiver<OrderBook<A>>>,
+    G: ExchangeGateway<A, S>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
     A: AssetIdentity,
     S: SubAccountIdentity,
@@ -148,23 +145,19 @@ where
         domain: OrderBookDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = match &self.feed {
-            Some(feed) => feed.access_channel(domain, id.clone())?.tx,
-            None => None,
-        };
-        let rx = match &self.connector {
-            Some(connector) => connector.access_channel(domain, id)?.rx,
-            None => None,
-        };
-        Ok(ChannelPair { tx, rx })
+        if let Some(feed) = &self.feed {
+            feed.access_channel(domain, id)
+        } else {
+            Ok(ChannelPair { tx: None, rx: None })
+        }
     }
 }
 
 impl<C, F, G, I, A, S> AccessChannel<TradeFlowDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<TradeFlowDomain, Id = I, Receiver = broadcast::Receiver<TradeFlow<A>>>,
-    F: ExchangeFeed<S, Id = I> + AccessChannel<TradeFlowDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
-    G: ExchangeGateway<S>,
+    C: ExchangeConnector<I, A, S>,
+    F: ExchangeFeed<A, S, Id = I> + AccessChannel<TradeFlowDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>, Receiver = broadcast::Receiver<TradeFlow<A>>>,
+    G: ExchangeGateway<A, S>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
     A: AssetIdentity,
     S: SubAccountIdentity,
@@ -178,23 +171,19 @@ where
         domain: TradeFlowDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = match &self.feed {
-            Some(feed) => feed.access_channel(domain, id.clone())?.tx,
-            None => None,
-        };
-        let rx = match &self.connector {
-            Some(connector) => connector.access_channel(domain, id)?.rx,
-            None => None,
-        };
-        Ok(ChannelPair { tx, rx })
+        if let Some(feed) = &self.feed {
+            feed.access_channel(domain, id)
+        } else {
+            Ok(ChannelPair { tx: None, rx: None })
+        }
     }
 }
 
 impl<C, F, G, I, A, S> AccessChannel<KlineDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<KlineDomain, Id = I, Receiver = broadcast::Receiver<KlineSeries<A>>>,
-    F: ExchangeFeed<S, Id = I> + AccessChannel<KlineDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>>,
-    G: ExchangeGateway<S>,
+    C: ExchangeConnector<I, A, S>,
+    F: ExchangeFeed<A, S, Id = I> + AccessChannel<KlineDomain, Id = I, Sender = mpsc::Sender<FeedCommand<I>>, Receiver = broadcast::Receiver<KlineSeries<A>>>,
+    G: ExchangeGateway<A, S>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
     A: AssetIdentity,
     S: SubAccountIdentity,
@@ -208,15 +197,11 @@ where
         domain: KlineDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = match &self.feed {
-            Some(feed) => feed.access_channel(domain, id.clone())?.tx,
-            None => None,
-        };
-        let rx = match &self.connector {
-            Some(connector) => connector.access_channel(domain, id)?.rx,
-            None => None,
-        };
-        Ok(ChannelPair { tx, rx })
+        if let Some(feed) = &self.feed {
+            feed.access_channel(domain, id)
+        } else {
+            Ok(ChannelPair { tx: None, rx: None })
+        }
     }
 }
 
@@ -226,9 +211,9 @@ where
 
 impl<C, F, G, I, A, S> AccessChannel<OrderDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<OrderDomain, Id = (), Receiver = broadcast::Receiver<OrderUpdate<I, A, S>>>,
-    F: ExchangeFeed<S, Id = I>,
-    G: ExchangeGateway<S, Id = I> + AccessChannel<OrderDomain, Id = S, Sender = mpsc::Sender<OrderCommand<I, S>>>,
+    C: ExchangeConnector<I, A, S>,
+    F: ExchangeFeed<A, S, Id = I>,
+    G: ExchangeGateway<A, S, Id = I> + AccessChannel<OrderDomain, Id = S, Sender = mpsc::Sender<OrderCommand<I, S>>, Receiver = broadcast::Receiver<OrderUpdate<I, A, S>>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
     A: AssetIdentity,
     S: SubAccountIdentity,
@@ -242,23 +227,19 @@ where
         domain: OrderDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = match &self.gateway {
-            Some(gateway) => gateway.access_channel(domain, id)?.tx,
-            None => None,
-        };
-        let rx = match &self.connector {
-            Some(connector) => connector.access_channel(domain, ())?.rx,
-            None => None,
-        };
-        Ok(ChannelPair { tx, rx })
+        if let Some(gateway) = &self.gateway {
+            gateway.access_channel(domain, id)
+        } else {
+            Ok(ChannelPair { tx: None, rx: None })
+        }
     }
 }
 
 impl<C, F, G, I, A, S> AccessChannel<PositionDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<PositionDomain, Id = (), Receiver = broadcast::Receiver<PositionUpdate<A, S>>>,
-    F: ExchangeFeed<S, Id = I>,
-    G: ExchangeGateway<S, Id = I> + AccessChannel<PositionDomain, Id = S, Sender = mpsc::Sender<PositionCommand<I, S>>>,
+    C: ExchangeConnector<I, A, S>,
+    F: ExchangeFeed<A, S, Id = I>,
+    G: ExchangeGateway<A, S, Id = I> + AccessChannel<PositionDomain, Id = S, Sender = mpsc::Sender<PositionCommand<I, S>>, Receiver = broadcast::Receiver<PositionUpdate<A, S>>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
     A: AssetIdentity,
     S: SubAccountIdentity,
@@ -272,23 +253,19 @@ where
         domain: PositionDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = match &self.gateway {
-            Some(gateway) => gateway.access_channel(domain, id)?.tx,
-            None => None,
-        };
-        let rx = match &self.connector {
-            Some(connector) => connector.access_channel(domain, ())?.rx,
-            None => None,
-        };
-        Ok(ChannelPair { tx, rx })
+        if let Some(gateway) = &self.gateway {
+            gateway.access_channel(domain, id)
+        } else {
+            Ok(ChannelPair { tx: None, rx: None })
+        }
     }
 }
 
 impl<C, F, G, I, A, S> AccessChannel<BalanceDomain> for Exchange<C, F, G, I, A, S>
 where
-    C: ExchangeConnector + AccessChannel<BalanceDomain, Id = (), Receiver = broadcast::Receiver<BalanceUpdate<A, S>>>,
-    F: ExchangeFeed<S, Id = I>,
-    G: ExchangeGateway<S, Id = I> + AccessChannel<BalanceDomain, Id = S, Sender = mpsc::Sender<BalanceCommand<S>>>,
+    C: ExchangeConnector<I, A, S>,
+    F: ExchangeFeed<A, S, Id = I>,
+    G: ExchangeGateway<A, S, Id = I> + AccessChannel<BalanceDomain, Id = S, Sender = mpsc::Sender<BalanceCommand<S>>, Receiver = broadcast::Receiver<BalanceUpdate<A, S>>>,
     I: Send + Sync + 'static + Clone + std::hash::Hash + Eq,
     A: AssetIdentity,
     S: SubAccountIdentity,
@@ -302,14 +279,10 @@ where
         domain: BalanceDomain,
         id: Self::Id,
     ) -> anyhow::Result<ChannelPair<Self::Sender, Self::Receiver>> {
-        let tx = match &self.gateway {
-            Some(gateway) => gateway.access_channel(domain, id)?.tx,
-            None => None,
-        };
-        let rx = match &self.connector {
-            Some(connector) => connector.access_channel(domain, ())?.rx,
-            None => None,
-        };
-        Ok(ChannelPair { tx, rx })
+        if let Some(gateway) = &self.gateway {
+            gateway.access_channel(domain, id)
+        } else {
+            Ok(ChannelPair { tx: None, rx: None })
+        }
     }
 }

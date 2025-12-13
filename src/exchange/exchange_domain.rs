@@ -3,6 +3,16 @@ use crate::common::account_model::{
 };
 use thiserror::Error;
 
+/// ! # 交易所领域模型 (Exchange Domain Model)
+/// !
+/// ! 本模块定义了 Unitrade 框架的核心通信协议。
+/// ! 这些协议连接了框架的两个侧面：
+/// !
+/// ! 1. **[API] 框架用户侧**: 策略开发者使用 `FeedCommand`, `OrderCommand` 等高层指令与系统交互。
+/// ! 2. **[SPI] 交易所实现侧**: 适配器开发者处理 `ConnectorRequest` 等底层指令，将其转换为具体的 API 调用。
+/// !
+/// ! `StandardFeed` 和 `StandardGateway` 的主要职责就是将 [API] 指令翻译为 [SPI] 指令。
+
 /// 业务域标签 (Domain Tag)
 ///
 /// 这是一个标记 Trait，用于标识一个类型是“业务域标签”。
@@ -159,31 +169,32 @@ pub enum ChannelType {
 pub enum ConnectorRequest<I, S: SubAccountIdentity> {
     // --- Feed Requests ---
 
-    /// 订阅行情指令
+    /// 建立数据流指令 (Establish Data Stream)
     ///
-    /// 请求 Connector 建立对特定标的、特定类型数据流的监听。
-    /// 成功后，数据将通过 `ConnectorChannels` 广播。
-    Subscribe {
-        /// 订阅的目标标的
+    /// 请求 Connector 建立对特定标的、特定类型数据流的物理或逻辑连接。
+    /// 这是一个底层设施指令。Connector 应根据自身实现（WebSocket/REST/File）决定如何获取数据。
+    EstablishDataStream {
+        /// 目标标的
         instrument: I,
-        /// 订阅的数据类型 (如 OrderBook, TradeFlow)
+        /// 数据类型 (如 OrderBook, TradeFlow)
         channel_type: ChannelType,
     },
 
-    /// 取消订阅指令
+    /// 停止数据流指令 (Stop Data Stream)
     ///
-    /// 请求 Connector 停止监听特定数据流。
-    Unsubscribe {
+    /// 请求 Connector 断开或停止特定数据流的获取。
+    StopDataStream {
         instrument: I,
         channel_type: ChannelType,
     },
 
     // --- Gateway Requests (Execution) ---
 
-    /// 提交订单指令
+    /// 传输订单指令 (Transmit Order)
     ///
-    /// 请求 Connector 向交易所发送一个新的订单。
-    SubmitOrder {
+    /// 请求 Connector 将订单请求发送到交易所。
+    /// 这是一个纯粹的发送动作，不包含业务层的订单管理逻辑。
+    TransmitOrder {
         /// 子账户 ID (用于多账户管理)
         sub_account_id: S,
         /// 交易标的
@@ -192,21 +203,20 @@ pub enum ConnectorRequest<I, S: SubAccountIdentity> {
         req: OrderRequest,
     },
 
-    /// 取消订单指令
+    /// 传输取消指令 (Transmit Cancel)
     ///
-    /// 请求 Connector 撤销一个未完全成交的订单。
-    CancelOrder {
+    /// 请求 Connector 将撤单请求发送到交易所。
+    TransmitCancel {
         sub_account_id: S,
         instrument: I,
         /// 要取消的订单 ID (交易所 ID)
         order_id: OrderId,
     },
 
-    /// 修改订单指令
+    /// 传输修改指令 (Transmit Amend)
     ///
-    /// 请求 Connector 修改一个现有订单的参数 (如价格或数量)。
-    /// 注意：并非所有交易所都支持原子修改，部分实现可能需要先撤后发。
-    AmendOrder {
+    /// 请求 Connector 将改单请求发送到交易所。
+    TransmitAmend {
         sub_account_id: S,
         instrument: I,
         order_id: OrderId,
@@ -215,28 +225,25 @@ pub enum ConnectorRequest<I, S: SubAccountIdentity> {
 
     // --- Gateway Requests (Batch Execution) ---
 
-    /// 批量提交订单指令
-    ///
-    /// 请求 Connector 一次性发送多个订单。
-    BatchSubmitOrder {
+    /// 批量传输订单指令
+    TransmitBatchOrder {
         sub_account_id: S,
         instrument: I,
         reqs: Vec<OrderRequest>,
         /// 是否要求原子性 (All-or-Nothing)。
-        /// 如果交易所不支持原子性，Connector 实现应尽可能模拟或忽略此标志并记录警告。
         atomic: bool,
     },
 
-    /// 批量取消订单指令
-    BatchCancelOrder {
+    /// 批量传输取消指令
+    TransmitBatchCancel {
         sub_account_id: S,
         instrument: I,
         order_ids: Vec<OrderId>,
         atomic: bool,
     },
 
-    /// 批量修改订单指令
-    BatchAmendOrder {
+    /// 批量传输修改指令
+    TransmitBatchAmend {
         sub_account_id: S,
         instrument: I,
         amends: Vec<(OrderId, OrderRequest)>,
@@ -245,37 +252,28 @@ pub enum ConnectorRequest<I, S: SubAccountIdentity> {
 
     // --- Gateway Requests (Query) ---
 
-    /// 查询当前挂单指令
-    ///
-    /// 请求 Connector 获取当前未结束的订单列表。
-    /// 结果通常通过 `OrderUpdate` 通道异步返回，或作为 Future 的结果返回 (取决于具体实现模式)。
-    FetchOpenOrders {
+    /// 执行查询挂单指令
+    ExecuteFetchOpenOrders {
         sub_account_id: S,
         /// 可选的标的过滤。如果为 None，则查询该账户下所有标的的挂单。
         instrument: Option<I>,
     },
 
-    /// 查询特定订单指令
-    ///
-    /// 请求 Connector 获取某个特定订单的最新状态。
-    FetchOrder {
+    /// 执行查询特定订单指令
+    ExecuteFetchOrder {
         sub_account_id: S,
         instrument: I,
         order_id: OrderId,
     },
 
-    /// 查询持仓指令
-    ///
-    /// 请求 Connector 获取当前的持仓信息。
-    FetchPositions {
+    /// 执行查询持仓指令
+    ExecuteFetchPositions {
         sub_account_id: S,
         instrument: Option<I>,
     },
 
-    /// 查询余额指令
-    ///
-    /// 请求 Connector 获取账户的资产余额信息。
-    FetchBalances { sub_account_id: S },
+    /// 执行查询余额指令
+    ExecuteFetchBalances { sub_account_id: S },
 }
 
 // --- Feed DSL ---
@@ -288,26 +286,31 @@ pub enum ConnectorRequest<I, S: SubAccountIdentity> {
 /// 使用泛型 `I` (Instrument) 来指定操作对象。
 #[derive(Debug, Clone)]
 pub enum FeedCommand<I> {
-    /// 订阅指令
+    /// 追踪标的指令 (Track Instrument)
     ///
-    /// 指示 Feed 开始提供特定标的的数据。
-    /// Feed 收到此指令后，通常会向 Connector 发送 `ConnectorRequest::Subscribe`。
-    Subscribe {
+    /// [业务语义]：用户表达“我对这个标的的数据感兴趣”。
+    /// Feed 收到此指令后，应检查内部状态。如果尚未建立数据流，则向 Connector 发送 `EstablishDataStream`。
+    /// 这与“网络订阅”解耦：Feed 可以决定是从缓存读取、从其他 Feed 聚合，还是真的去联网。
+    Track {
         instrument: I,
         channel_type: ChannelType,
     },
 
-    /// 取消订阅指令
-    Unsubscribe {
+    /// 停止追踪指令 (Untrack Instrument)
+    ///
+    /// [业务语义]：用户表达“我不再关心这个标的的数据”。
+    /// Feed 收到此指令后，应清理内部状态。如果没有任何用户关注该标的，Feed 可能会向 Connector 发送 `StopDataStream`。
+    Untrack {
         instrument: I,
         channel_type: ChannelType,
     },
 
-    /// 请求快照指令
+    /// 刷新快照指令 (Refresh Snapshot)
     ///
-    /// 请求 Feed 立即推送一次当前的全量数据快照（如当前的 OrderBook）。
-    /// 这对于策略启动时的状态初始化非常有用。
-    RequestSnapshot { instrument: I },
+    /// [业务语义]：用户请求“给我一份最新的全量数据”。
+    /// 这不一定触发网络请求，Feed 可以直接返回本地维护的 Canvas 快照。
+    RefreshSnapshot { instrument: I },
+
 
     /// 暂停推送指令
     ///
@@ -351,27 +354,28 @@ pub enum GatewayError {
 pub enum OrderCommand<I, S: SubAccountIdentity> {
     // --- Single Operations ---
 
-    /// 创建订单指令
+    /// 下单指令 (Place Order)
     ///
-    /// 请求创建一个新的订单。
-    Create {
+    /// [业务语义]：用户表达“我想以特定条件买入/卖出”。
+    /// Gateway 收到此指令后，会进行本地风控检查、资金预冻结，然后向 Connector 发送 `TransmitOrder`。
+    Place {
         sub_account_id: S,
         instrument: I,
         req: OrderRequest,
     },
 
-    /// 取消订单指令
+    /// 撤单指令 (Cancel Order)
     ///
-    /// 请求取消一个指定的订单。
+    /// [业务语义]：用户表达“我想撤销之前的委托”。
     Cancel {
         sub_account_id: S,
         instrument: I,
         id: OrderId,
     },
 
-    /// 修改订单指令
+    /// 改单指令 (Amend Order)
     ///
-    /// 请求修改一个现有订单的参数（如价格或数量）。
+    /// [业务语义]：用户表达“我想修改之前的委托”。
     Amend {
         sub_account_id: S,
         instrument: I,
@@ -381,11 +385,8 @@ pub enum OrderCommand<I, S: SubAccountIdentity> {
 
     // --- Batch Operations ---
 
-    /// 批量创建订单指令
-    ///
-    /// 请求一次性创建多个订单。
-    /// `atomic`: 如果为 true，且交易所支持，则这些订单要么全部成功，要么全部失败。
-    BatchCreate {
+    /// 批量下单指令
+    BatchPlace {
         sub_account_id: S,
         instrument: I,
         reqs: Vec<OrderRequest>,
@@ -393,7 +394,7 @@ pub enum OrderCommand<I, S: SubAccountIdentity> {
         atomic: bool,
     },
 
-    /// 批量取消订单指令
+    /// 批量撤单指令
     BatchCancel {
         sub_account_id: S,
         instrument: I,
@@ -401,7 +402,7 @@ pub enum OrderCommand<I, S: SubAccountIdentity> {
         atomic: bool,
     },
 
-    /// 批量修改订单指令
+    /// 批量改单指令
     BatchAmend {
         sub_account_id: S,
         instrument: I,
@@ -415,13 +416,13 @@ pub enum OrderCommand<I, S: SubAccountIdentity> {
     ///
     /// 查询当前未完成的订单列表。
     /// `instrument`: 可选。如果提供，则只查询该标的的挂单；否则查询所有。
-    GetOpenOrders {
+    QueryOpenOrders {
         sub_account_id: S,
         instrument: Option<I>,
     },
 
     /// 查询特定订单指令
-    GetOrder {
+    QueryOrder {
         sub_account_id: S,
         instrument: I,
         id: OrderId,
@@ -513,18 +514,27 @@ pub enum OrderUpdate<I, A: AssetIdentity, S: SubAccountIdentity> {
 // --- Position Domain ---
 
 /// 持仓控制指令集
+///
+/// 策略层或 Gateway 通过此指令集管理持仓数据的获取。
+///
+/// [业务语义]：用户表达“我需要关注持仓状态”。
+/// Gateway 收到此指令后，应确保能够持续获取持仓更新。
+/// 这可能通过 WebSocket 订阅实现，也可能通过定期轮询 REST API 实现。
 #[derive(Debug, Clone)]
 pub enum PositionCommand<I, S: SubAccountIdentity> {
-    /// 订阅持仓更新
+    /// 监视持仓指令 (Monitor Positions)
     ///
-    /// 请求 Connector 推送持仓变化数据。
-    Subscribe {
+    /// [业务语义]：用户表达“请保持我的持仓数据是最新的”。
+    /// Gateway 应建立必要的机制（如订阅 WS 或启动轮询任务）来满足此需求。
+    /// [禁止事项]：不应包含任何关于“订阅”、“连接”、“WebSocket”等实现细节的描述。
+    Monitor {
         sub_account_id: S,
     },
 
-    /// 查询持仓
+    /// 查询持仓指令 (Query Positions)
     ///
-    /// 请求立即返回当前的持仓状态。
+    /// [业务语义]：用户表达“我现在就要一份持仓快照”。
+    /// Gateway 应立即返回当前的持仓状态（可能是本地缓存的，也可能是实时查询的）。
     Query {
         sub_account_id: S,
         instrument: Option<I>,
@@ -536,7 +546,7 @@ pub enum PositionCommand<I, S: SubAccountIdentity> {
 pub enum PositionUpdate<A: AssetIdentity, S: SubAccountIdentity> {
     /// 持仓快照
     ///
-    /// 通常在订阅成功后或查询响应时返回全量持仓数据。
+    /// 通常在 Monitor 开始后或 Query 响应时返回全量持仓数据。
     Snapshot(Vec<Position<A, S>>),
 
     /// 持仓变更
@@ -551,12 +561,21 @@ pub enum PositionUpdate<A: AssetIdentity, S: SubAccountIdentity> {
 // --- Balance Domain ---
 
 /// 资金/余额控制指令集
+///
+/// 策略层或 Gateway 通过此指令集管理资金数据的获取。
+///
+/// [业务语义]：用户表达“我需要关注资金状态”。
 #[derive(Debug, Clone)]
 pub enum BalanceCommand<S: SubAccountIdentity> {
-    /// 订阅余额更新
-    Subscribe { sub_account_id: S },
+    /// 监视余额指令 (Monitor Balances)
+    ///
+    /// [业务语义]：用户表达“请保持我的余额数据是最新的”。
+    /// Gateway 应建立必要的机制（如订阅 WS 或启动轮询任务）来满足此需求。
+    Monitor { sub_account_id: S },
 
-    /// 查询余额
+    /// 查询余额指令 (Query Balances)
+    ///
+    /// [业务语义]：用户表达“我现在就要一份余额快照”。
     Query { sub_account_id: S },
 }
 
